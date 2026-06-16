@@ -1,8 +1,10 @@
 // POST /api/set-style — record the project's chosen STYLE reference.
-//   JSON  { id, choice: "sketch"|"ink"|"grayscale" }  -> copy that candidate to the "ref" slot.
+//   JSON  { id, choice: "sketch"|"ink"|"grayscale" }  -> freeze that PREMADE static swatch as the ref.
 //   multipart { id, style: <image file> }             -> use the uploaded image as the ref.
 // The chosen ref is then fed into every panel's generation + QA.
-import { authed, json, getProject, putProject, readStyleImg, saveStyleImg } from "./_lib.mjs";
+import { authed, json, getProject, putProject, saveStyleImg } from "./_lib.mjs";
+
+const PRESETS = ["sketch", "ink", "grayscale"];
 
 export default async (req) => {
   if (!authed(req)) return json({ error: "unauthorized" }, 401);
@@ -24,10 +26,16 @@ export default async (req) => {
 
     const { id, choice } = await req.json();
     if (!id || !choice) return json({ error: "missing id/choice" }, 400);
+    if (!PRESETS.includes(choice)) return json({ error: "unknown style" }, 400);
     const p = await getProject(id); if (!p) return json({ error: "project not found" }, 404);
-    const buf = await readStyleImg(id, "cand_" + choice);
-    if (!buf) return json({ error: "candidate not generated" }, 404);
-    await saveStyleImg(id, "ref", Buffer.from(buf).toString("base64"));
+    // premade swatches are static assets at /styles/<id>.png — fetch the chosen one + freeze it as this project's ref
+    const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
+    const proto = req.headers.get("x-forwarded-proto") || "https";
+    const assetUrl = `${proto}://${host}/styles/${choice}.png`;
+    const r = await fetch(assetUrl);
+    if (!r.ok) return json({ error: `preset fetch ${r.status} (${assetUrl})` }, 502);
+    const b64 = Buffer.from(new Uint8Array(await r.arrayBuffer())).toString("base64");
+    await saveStyleImg(id, "ref", b64);
     await putProject(id, { ...p, styleRef: true, styleChoice: choice });
     return json({ ok: true, choice });
   } catch (e) {

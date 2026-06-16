@@ -384,10 +384,12 @@ const STYLE_OPTS = [
   { id: "ink",       name: "Clean comic line-art",      desc: "Confident flat black ink linework — crisp and clear." },
   { id: "grayscale", name: "Cinematic grayscale concept", desc: "Moody graphite tone with soft shading and depth." },
 ];
-const styleImgURL = which => `/api/style-image?id=${encodeURIComponent(state.current.id)}&which=${which}&t=${Date.now()}`;
+// Premade style swatches ship as static assets at /public/styles/<id>.png — shown INSTANTLY, no
+// per-project generation and no image-API cost. (DEMO uses the same relative path.)
+const styleAsset = id => `styles/${id}.png`;
 function styleCardHTML(o) {
   return `<div class="stylecard" data-style="${o.id}">
-    <div class="stimg empty" data-state="Queued"></div>
+    <div class="stimg" style="background-image:url('${styleAsset(o.id)}')"></div>
     <div class="stmeta"><b>${esc(o.name)}</b><span>${esc(o.desc)}</span></div>
     <button class="stpick">Select</button>
   </div>`;
@@ -399,43 +401,10 @@ function styleUploadHTML() {
     <div class="stmeta"><b>Your own reference</b><span>Use a style frame you already have.</span></div>
   </div>`;
 }
-function fillStyleCard(which, url) {
-  const el = $(`.stylecard[data-style="${which}"] .stimg`); if (!el || el.dataset.loaded === "1") return;
-  stopCountdown("st_" + which, el);
-  el.classList.remove("empty", "loading", "up"); el.innerHTML = ""; el.dataset.state = ""; el.dataset.loaded = "1";
-  el.style.backgroundImage = `url('${url}')`;
-  play("tick");
-}
-async function renderStyle() {
+function renderStyle() {
   state.styleChoice = null; state._styleFile = null;
   $("#useStyleBtn").disabled = true;
-  const board = $("#styleBoard");
-  board.innerHTML = STYLE_OPTS.map(styleCardHTML).join("") + styleUploadHTML();
-
-  if (DEMO) {
-    for (let i = 0; i < STYLE_OPTS.length; i++) {
-      const el = $(`.stylecard[data-style="${STYLE_OPTS[i].id}"] .stimg`);
-      startCountdown("st_" + STYLE_OPTS[i].id, el, 3, "Drawing");
-      await tick(700);
-      fillStyleCard(STYLE_OPTS[i].id, demoImg(i + 1));
-    }
-    return;
-  }
-
-  // real: kick off candidate generation, then poll status and fill each swatch as it lands
-  STYLE_OPTS.forEach(o => startCountdown("st_" + o.id, $(`.stylecard[data-style="${o.id}"] .stimg`), 75, "Drawing"));
-  await fetch("/.netlify/functions/style-candidates-background", {
-    method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
-    body: JSON.stringify({ id: state.current.id }),
-  }).catch(() => {});
-  for (let n = 0; n < 200; n++) {
-    await tick(2500);
-    let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
-    (st.styleCandidates || []).forEach(cid => fillStyleCard(cid, styleImgURL("cand_" + cid)));
-    if (st.styleStage === "ready") break;
-    if (st.styleStage === "error" && !(st.styleCandidates || []).length) { play("error"); break; }
-  }
-  STYLE_OPTS.forEach(o => stopCountdown("st_" + o.id, $(`.stylecard[data-style="${o.id}"] .stimg`)));
+  $("#styleBoard").innerHTML = STYLE_OPTS.map(styleCardHTML).join("") + styleUploadHTML();
 }
 const styleBoard = $("#styleBoard");
 function selectStyle(card) {
