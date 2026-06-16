@@ -175,28 +175,37 @@ $("#startBtn").addEventListener("click", async () => {
 async function runBreakdown() {
   const steps = $$("#analyzeSteps li");
   $("#analyzerDoc").innerHTML = Array.from({ length: 9 }, () => `<span style="width:${50 + Math.random() * 45}%"></span>`).join("");
-  $("#liveShotlist").innerHTML = ""; $("#liveCount").textContent = "building…";
-  const shots = DEMO ? demoShots() : await apiBreakdown();   // apiBreakdown polls /api in prod
+  $("#liveShotlist").innerHTML = ""; $("#liveCount").textContent = "analyzing…";
 
-  // animate the analysis steps + stream shots into the right pane
-  for (let i = 0; i < steps.length; i++) {
-    steps.forEach((s, j) => { s.classList.toggle("active", j === i); s.classList.toggle("done", j < i); });
-    await tick(DEMO ? 520 : 250);
-  }
+  // loop the analysis steps WHILE we wait (real breakdown takes 1-3 min)
+  let animating = true;
+  (async () => {
+    let i = 0;
+    while (animating) {
+      const k = i % steps.length;
+      steps.forEach((s, j) => { s.classList.toggle("active", j === k); s.classList.toggle("done", j < k); });
+      i++; await tick(DEMO ? 520 : 1400);
+    }
+  })();
+
+  const shots = DEMO ? (await tick(2600), demoShots()) : await apiBreakdown();
+
+  animating = false;
   steps.forEach(s => { s.classList.add("done"); s.classList.remove("active"); });
+  $("#liveCount").textContent = "building…";
 
   // stream the shotlist appearing
   for (let k = 0; k < shots.length; k++) {
     const s = shots[k];
     $("#liveShotlist").insertAdjacentHTML("beforeend",
       `<div class="live-row"><span class="num">#${s.shot}</span>
-        <div><div class="lr-type">${s.type}${s.is_staging ? " · staging" : ""}</div>
+        <div><div class="lr-type">${esc(s.type)}${s.is_staging ? " · staging" : ""}</div>
         <div class="lr-body">${esc(s.caption || "")}</div></div></div>`);
     $("#liveCount").textContent = `${k + 1} shots`;
     $("#liveShotlist").scrollTop = $("#liveShotlist").scrollHeight;
-    await tick(DEMO ? 280 : 0);
+    await tick(DEMO ? 280 : 60);
   }
-  await tick(450);
+  await tick(400);
   return shots;
 }
 
@@ -553,18 +562,39 @@ const today = () => new Date().toLocaleDateString(undefined, { month: "short", d
 function dl(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
 
 /* ============================ backend contract (used when deployed) ============================ */
+function appPw() {
+  let p = localStorage.getItem("sb_pw");
+  if (!p) { p = prompt("Enter the app password:") || ""; if (p) localStorage.setItem("sb_pw", p); }
+  return p;
+}
+const apiHeaders = () => ({ "x-app-password": appPw() });
+
 async function apiBreakdown() {
   const form = new FormData();
   if (state.file) form.append("script", state.file);
-  form.append("project", state.current.name); form.append("scene", state.current.scene);
-  form.append("format", state.current.format); form.append("editorial", "1");
+  form.append("project", state.current.name);
+  form.append("format", state.current.format);
+  form.append("editorial", "1");
   form.append("mode", state.uploadMode || "script");
-  const { id } = await (await fetch("/api/breakdown", { method: "POST", body: form })).json();
+  const res = await fetch("/api/breakdown", { method: "POST", body: form, headers: apiHeaders() });
+  if (res.status === 401) { localStorage.removeItem("sb_pw"); play("error"); alert("Wrong app password — reload and try again."); return []; }
+  if (!res.ok) { play("error"); alert("Breakdown failed: " + (await res.text()).slice(0, 200)); return []; }
+  const { id, error } = await res.json();
+  if (error) { play("error"); alert(error); return []; }
   state.current.id = id;
+  // Trigger the background worker DIRECTLY (returns 202 and runs server-side).
+  await fetch("/.netlify/functions/breakdown-background", {
+    method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ id }),
+  }).catch(() => {});
   for (;;) {
     await tick(2500);
-    const st = await (await fetch(`/api/status?id=${id}`)).json();
-    if (st.status === "shots_ready") return st.shots;
+    const st = await (await fetch(`/api/status?id=${id}`, { headers: apiHeaders() })).json();
+    if (st.status === "shots_ready") {
+      if (st.scene) state.current.scene = st.scene;
+      if (st.location) state.current.location = st.location;
+      return st.shots;
+    }
     if (st.status === "error") { play("error"); alert(st.message || "Breakdown failed"); return []; }
   }
 }
