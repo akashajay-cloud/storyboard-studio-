@@ -1,6 +1,8 @@
 [build]
   publish = "public"
   functions = "netlify/functions"
+  # ensure function dependencies (unpdf, mammoth, @netlify/blobs) are installed before bundling
+  command = "npm install"
 
 # Fast API calls (breakdown kickoff, status, shot edits) -> synchronous functions.
 # Long jobs use *-background.ts functions (15-min limit) invoked via /.netlify/functions/<name>.
