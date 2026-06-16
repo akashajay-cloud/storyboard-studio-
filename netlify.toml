@@ -1,0 +1,19 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+# Fast API calls (breakdown kickoff, status, shot edits) -> synchronous functions.
+# Long jobs use *-background.ts functions (15-min limit) invoked via /.netlify/functions/<name>.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# SPA fallback (keep LAST)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[functions]
+  node_bundler = "esbuild"

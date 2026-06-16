@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Storyboard Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="aurora"></div>
+
+  <header class="topbar">
+    <div class="brand" id="brandHome">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/>
+          <path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/>
+          <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
+        </svg>
+      </span>
+      <span class="brand-name">Storyboard&nbsp;Studio</span>
+    </div>
+
+    <nav class="stepper" id="stepper">
+      <button class="step" data-step="upload"><i>1</i>Script</button>
+      <button class="step" data-step="review"><i>2</i>Shotlist</button>
+      <button class="step" data-step="staging"><i>3</i>Staging</button>
+      <button class="step" data-step="generate"><i>4</i>Generate</button>
+      <button class="step" data-step="board"><i>5</i>Storyboard</button>
+    </nav>
+
+    <div class="topbar-right">
+      <button class="iconbtn" id="soundToggle" title="Notification sounds">
+        <svg class="ic-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
+        <svg class="ic-off hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
+      </button>
+      <span id="demoBadge" class="badge hidden">demo</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- PROJECTS (home) -->
+    <section class="screen active" data-screen="projects">
+      <div class="screen-head">
+        <div><h2>Your projects</h2><p class="muted">Each script becomes its own project — open one to revisit it.</p></div>
+        <button class="btn primary" id="newProjectBtn">+ New project</button>
+      </div>
+      <div class="projects" id="projectGrid"></div>
+    </section>
+
+    <!-- STEP 1 — SCRIPT -->
+    <section class="screen" data-screen="upload">
+      <div class="herowrap">
+        <div class="herocol">
+          <p class="eyebrow">✦ Script to storyboard, automatically</p>
+          <h1>Turn a screenplay into a <em>blocking storyboard</em> in one pass.</h1>
+          <p class="lede">Upload a script and the studio breaks it into shots, sketches each panel in
+            a consistent house style, quality-checks every drawing, and lays them out into clean,
+            downloadable storyboard pages — no software to install. Already have a shot list? Import
+            it and skip straight to drawing.</p>
+
+          <div class="features">
+            <div class="feat"><span class="fi">✎</span><h4>Shot breakdown</h4><p>Your script is parsed into a structured shot list — type, scene description, characters, action.</p></div>
+            <div class="feat"><span class="fi">✦</span><h4>Panel sketches</h4><p>Each shot is drawn as a rough black-and-white blocking sketch in a fixed house style.</p></div>
+            <div class="feat"><span class="fi">◎</span><h4>Automatic QA</h4><p>Every panel is checked up to three times for characters, labels, position and framing.</p></div>
+            <div class="feat"><span class="fi">▦</span><h4>Storyboard pages</h4><p>Approved panels are laid out into clean 9:16 sheets, six per page, ready to download.</p></div>
+          </div>
+        </div>
+
+        <aside class="startcard">
+          <h3>Start a storyboard</h3>
+          <p class="muted small">Choose what you're uploading.</p>
+          <div class="tabs">
+            <button class="tab active" data-tab="script">📄 Script</button>
+            <button class="tab" data-tab="shortlist">≣ Shortlist</button>
+          </div>
+          <p class="note" id="uploadNote">We analyze the screenplay, build a shot list, then draw each panel.</p>
+
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="fileInput" accept=".pdf,.docx,.txt" hidden />
+            <div class="dz-inner col">
+              <div class="dz-icon">⬆</div>
+              <div class="dz-text center"><strong>Drop your script here</strong><span>PDF, DOCX, or TXT — up to 15 MB</span></div>
+            </div>
+            <div class="dz-file hidden" id="dzFile"></div>
+          </div>
+
+          <label class="field"><span>Project name <em>(optional)</em></span>
+            <input id="projectName" placeholder="Defaults to the file name" /></label>
+          <p class="note">The scene number and label are detected automatically from your script.</p>
+
+          <button class="btn primary big block" id="startBtn">Generate shot list →</button>
+        </aside>
+      </div>
+    </section>
+
+    <!-- STEP 2a — ANALYZING (split screen) -->
+    <section class="screen" data-screen="analyzing">
+      <div class="screen-head"><div><h2>Building your shotlist</h2><p class="muted">Watch it work — analysis on the left, shots appear on the right.</p></div></div>
+      <div class="split">
+        <div class="split-pane">
+          <div class="analyzer">
+            <div class="scanner"></div>
+            <div class="analyzer-doc" id="analyzerDoc"></div>
+          </div>
+          <ul class="analyze-steps" id="analyzeSteps">
+            <li data-k="read">Reading the script</li>
+            <li data-k="scenes">Detecting scenes &amp; locations</li>
+            <li data-k="beats">Breaking down dramatic beats</li>
+            <li data-k="editorial">Adding editorial coverage</li>
+            <li data-k="style">Applying house style &amp; labels</li>
+          </ul>
+        </div>
+        <div class="split-pane">
+          <div class="live-head"><span class="livedot"></span> Shotlist <span class="muted" id="liveCount">building…</span></div>
+          <div class="live-list" id="liveShotlist"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2 — REVIEW SHOT LIST -->
+    <section class="screen" data-screen="review">
+      <p class="eyebrow">Step 1 · Review shot list</p>
+      <h2 class="review-title" id="reviewTitle">Project</h2>
+      <p class="review-meta" id="reviewMetaLine"></p>
+      <p class="muted review-desc">Read through the breakdown and edit any field inline. Delete shots
+        you don't need, or add new ones. When the shot list looks right, confirm it to begin drawing
+        and quality-checking each panel.</p>
+
+      <div class="legend-card">
+        <div class="legend-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Character labels
+        </div>
+        <div class="legend-chips" id="legendChips"></div>
+        <div class="legend-add">
+          <input id="charInput" placeholder="Add a character (e.g. Carter)" />
+          <button class="btn" id="charAddBtn">+ Add</button>
+        </div>
+      </div>
+
+      <div class="shotlist" id="shotGrid"></div>
+      <button class="addshot" id="addShotBtn"><span class="plus">＋</span> Add a shot</button>
+
+      <div class="footerbar">
+        <span class="muted" id="saveState">All changes saved.</span>
+        <div class="head-actions">
+          <button class="btn" id="saveShots">Save</button>
+          <button class="btn primary" id="toStaging">Confirm → Staging</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3 — STAGING -->
+    <section class="screen" data-screen="staging">
+      <div class="screen-head">
+        <div><h2>Lock the staging</h2><p class="muted">One wide reference per location keeps every shot consistent.</p></div>
+        <div class="head-actions">
+          <button class="btn" data-goto="review">← Shotlist</button>
+          <button class="btn primary" id="toGenerate">Looks right → Generate</button>
+        </div>
+      </div>
+      <div class="board" id="stagingBoard"></div>
+    </section>
+
+    <!-- STEP 4 — DRAWING PANELS -->
+    <section class="screen" data-screen="generate">
+      <p class="eyebrow">Step 2 · Drawing panels</p>
+      <h2 class="review-title" id="genTitle">Project</h2>
+      <p class="review-meta" id="genSub"></p>
+
+      <div class="genstatus">
+        <div class="genstatus-top">
+          <span id="genStateLabel">Generating…</span>
+          <span class="gencounts"><b class="ok" id="genApproved">0 approved</b><b class="fail" id="genFlagged">0 flagged</b></span>
+        </div>
+        <div class="genprog-label"><span>Panels drawn &amp; quality-checked</span><span id="progressPct">0%</span></div>
+        <div class="progressbar"><div class="progressfill" id="progressFill"></div></div>
+        <div class="genprog-foot"><span id="progressCount">0 of 0 panels</span><span id="progressEta"></span></div>
+        <div class="genstatus-actions hidden" id="genActions">
+          <button class="btn primary" id="resumeBtn">▷ Resume generation</button>
+          <button class="btn" data-goto="review">← Back to shot list</button>
+        </div>
+      </div>
+
+      <div class="panelgrid" id="genBoard"></div>
+    </section>
+
+    <!-- STEP 5 — STORYBOARD -->
+    <section class="screen" data-screen="board">
+      <div class="screen-head">
+        <div><h2>Your storyboard</h2><p class="muted" id="boardMeta"></p></div>
+        <div class="head-actions">
+          <button class="btn" data-goto="review">← Edit shotlist</button>
+          <button class="btn" data-goto="generate">Regenerate panels</button>
+          <button class="btn primary" id="downloadAll">↓ Download all</button>
+        </div>
+      </div>
+      <div class="pages" id="pages"></div>
+    </section>
+  </main>
+
+  <!-- lightbox with prev/next -->
+  <div class="lightbox" id="lightbox">
+    <button class="lb-nav lb-prev" id="lbPrev" aria-label="Previous">‹</button>
+    <img id="lightboxImg" alt="" />
+    <button class="lb-nav lb-next" id="lbNext" aria-label="Next">›</button>
+    <div class="lb-count" id="lbCount"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

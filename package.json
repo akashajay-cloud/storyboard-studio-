@@ -1,0 +1,10 @@
+{
+  "name": "storyboard-studio-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Script -> shot breakdown -> staged sketch panels -> storyboard. Netlify-native.",
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}

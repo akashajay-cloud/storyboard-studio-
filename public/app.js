@@ -1,0 +1,646 @@
+// Storyboard Studio — frontend. DEMO mode (file:// or localhost) simulates the backend so every
+// screen is fully clickable; on Netlify it calls /api/* instead.
+
+const DEMO = location.protocol === "file:" || location.hostname === "localhost";
+const STEPS = ["upload", "analyzing", "review", "staging", "generate", "board"];
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+const state = {
+  step: "projects",
+  file: null,
+  current: null,          // active project
+  projects: [],
+  soundOn: localStorage.getItem("sb_sound") !== "0",
+  lb: { list: [], i: 0 },
+};
+
+/* ============================ sounds (Web Audio, no files) ============================ */
+let actx;
+function tone(freqs, dur = 0.13, type = "sine", gain = 0.07) {
+  if (!state.soundOn) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
+    let t = actx.currentTime;
+    freqs.forEach((f, i) => {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.value = f; o.connect(g); g.connect(actx.destination);
+      const st = t + i * dur;
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.exponentialRampToValueAtTime(gain, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + dur);
+      o.start(st); o.stop(st + dur);
+    });
+  } catch (e) {}
+}
+const SOUNDS = {
+  ready: () => tone([660, 880]),                          // shotlist ready
+  done: () => tone([523, 659, 784], 0.15),                // all generations done
+  error: () => tone([220, 165], 0.26, "square", 0.06),    // timeout / failure
+  tick: () => tone([880], 0.05, "sine", 0.025),           // per-panel pass (soft)
+};
+const play = n => SOUNDS[n] && SOUNDS[n]();
+
+const soundBtn = $("#soundToggle");
+function renderSound() {
+  $(".ic-on", soundBtn).classList.toggle("hidden", !state.soundOn);
+  $(".ic-off", soundBtn).classList.toggle("hidden", state.soundOn);
+  soundBtn.classList.toggle("muted-state", !state.soundOn);
+}
+soundBtn.addEventListener("click", () => {
+  state.soundOn = !state.soundOn;
+  localStorage.setItem("sb_sound", state.soundOn ? "1" : "0");
+  renderSound();
+  if (state.soundOn) play("ready");
+});
+renderSound();
+
+/* ============================ navigation ============================ */
+function go(step) {
+  state.step = step;
+  $$(".screen").forEach(s => s.classList.toggle("active", s.dataset.screen === step));
+  $("#stepper").style.visibility = (step === "projects") ? "hidden" : "visible";
+  const idx = STEPS.indexOf(step);
+  $$(".step").forEach(b => {
+    const i = STEPS.indexOf(b.dataset.step);
+    b.classList.toggle("current", i === idx);
+    b.classList.toggle("done", i > -1 && i < idx);
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+$$(".step").forEach(b => b.addEventListener("click", () => {
+  if (state.step === "projects") return;
+  go(b.dataset.step);
+}));
+$$("[data-goto]").forEach(b => b.addEventListener("click", () => go(b.dataset.goto)));
+$("#brandHome").addEventListener("click", () => { renderProjects(); go("projects"); });
+
+/* ============================ projects ============================ */
+function loadProjects() {
+  try { state.projects = JSON.parse(localStorage.getItem("sb_projects") || "[]"); }
+  catch { state.projects = []; }
+  if (DEMO && state.projects.length === 0) state.projects = demoProjects();
+}
+function saveProjects() {
+  // keep storage light: don't persist big data-URL images in demo
+  const slim = state.projects.map(p => ({ ...p, _imgs: undefined }));
+  try { localStorage.setItem("sb_projects", JSON.stringify(slim)); } catch (e) {}
+}
+const STATUS_META = {
+  ready:   { cls: "ready",   icon: "✓", label: "Shot list ready" },
+  working: { cls: "stopped", icon: "⏸", label: "Stopped" },
+  stopped: { cls: "stopped", icon: "⏸", label: "Stopped" },
+  error:   { cls: "error",   icon: "⚠", label: "Error" },
+  done:    { cls: "done",    icon: "✓", label: "Storyboard ready" },
+};
+function renderProjects() {
+  loadProjects();
+  const cards = state.projects.map(p => {
+    const m = STATUS_META[p.status] || STATUS_META.ready;
+    const total = p.panelsTotal || p.shotCount || 0, done = p.panelsDone || 0;
+    const pct = total ? Math.round(done / total * 100) : 0;
+    const showBar = p.status !== "error";
+    return `<div class="pcard" data-id="${p.id}">
+      <button class="kebab" data-id="${p.id}">⋮</button>
+      <p class="pname">${esc(p.name)}</p>
+      ${p.location ? `<p class="ploc">${esc(p.location)}</p>` : ""}
+      <p class="pstatus-line ${m.cls}">${m.icon} ${m.label}</p>
+      ${showBar ? `<div class="ppanels"><span>${done}/${total} panels</span><span>${pct}%</span></div>
+        <div class="pbar"><div class="pfill" style="width:${pct}%"></div></div>` : ""}
+      <div class="pfoot"><span>🕐 ${esc(p.date || "")}</span><span class="open">Open →</span></div>
+    </div>`;
+  }).join("");
+  $("#projectGrid").innerHTML = `<div class="pcard new" id="newCard"><div class="plus">＋</div><div>New project</div></div>` + cards;
+  $("#newCard").addEventListener("click", newProject);
+  $$("#projectGrid .pcard[data-id]").forEach(c => c.addEventListener("click", () => openProject(c.dataset.id)));
+  $$("#projectGrid .kebab").forEach(k => k.addEventListener("click", e => e.stopPropagation()));
+}
+function newProject() { state.current = null; state.file = null; resetUpload(); go("upload"); }
+function openProject(id) {
+  const p = state.projects.find(x => x.id === id); if (!p) return;
+  state.current = p;
+  state.shots = p.shots || demoShots();
+  state.allChars = unionChars(state.shots);
+  if (p.status === "done") { buildBoard(true); }
+  else { renderShots(); go("review"); }
+}
+
+/* ============================ upload ============================ */
+const dz = $("#dropzone"), fileInput = $("#fileInput");
+function resetUpload() {
+  $(".dz-inner").classList.remove("hidden"); $("#dzFile").classList.add("hidden");
+  $("#projectName").value = ""; state.file = null;
+}
+dz.addEventListener("click", () => fileInput.click());
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("drag"); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+function setFile(f) {
+  state.file = f;
+  $("#dzFile").innerHTML = `<span class="pill gen">${f.name.split(".").pop().toUpperCase()}</span> ${esc(f.name)}`;
+  $("#dzFile").classList.remove("hidden"); $(".dz-inner").classList.add("hidden");
+}
+
+// Script / Shortlist tabs
+state.uploadMode = "script";
+$$(".tab").forEach(t => t.addEventListener("click", () => {
+  $$(".tab").forEach(x => x.classList.remove("active")); t.classList.add("active");
+  state.uploadMode = t.dataset.tab;
+  const shortlist = state.uploadMode === "shortlist";
+  $("#uploadNote").textContent = shortlist
+    ? "Import your existing shot list — we structure it and skip straight to drawing."
+    : "We analyze the screenplay, build a shot list, then draw each panel.";
+  $(".dz-text strong").textContent = shortlist ? "Drop your shot list here" : "Drop your script here";
+  $(".dz-text span").textContent = shortlist ? "CSV, XLSX, PDF, DOCX, or TXT — up to 15 MB" : "PDF, DOCX, or TXT — up to 15 MB";
+}));
+
+$("#startBtn").addEventListener("click", async () => {
+  const name = $("#projectName").value || (state.file ? state.file.name.replace(/\.[^.]+$/, "") : "Untitled");
+  if (!state.file && !DEMO) { dz.classList.add("drag"); setTimeout(() => dz.classList.remove("drag"), 600); return; }
+  state.current = { id: "p" + Date.now(), name, scene: "01", format: "9:16", location: "",
+                    status: "working", date: "just now", panelsDone: 0, panelsTotal: 0 };
+  state.projects.unshift(state.current); saveProjects();
+  go("analyzing");
+  state.shots = await runBreakdown();           // streams into the split screen
+  state.allChars = unionChars(state.shots);
+  state.current.shots = state.shots; state.current.shotCount = state.shots.length; saveProjects();
+  renderShots();
+  play("ready");
+  go("review");
+});
+
+/* ============================ breakdown (split-screen) ============================ */
+async function runBreakdown() {
+  const steps = $$("#analyzeSteps li");
+  $("#analyzerDoc").innerHTML = Array.from({ length: 9 }, () => `<span style="width:${50 + Math.random() * 45}%"></span>`).join("");
+  $("#liveShotlist").innerHTML = ""; $("#liveCount").textContent = "building…";
+  const shots = DEMO ? demoShots() : await apiBreakdown();   // apiBreakdown polls /api in prod
+
+  // animate the analysis steps + stream shots into the right pane
+  for (let i = 0; i < steps.length; i++) {
+    steps.forEach((s, j) => { s.classList.toggle("active", j === i); s.classList.toggle("done", j < i); });
+    await tick(DEMO ? 520 : 250);
+  }
+  steps.forEach(s => { s.classList.add("done"); s.classList.remove("active"); });
+
+  // stream the shotlist appearing
+  for (let k = 0; k < shots.length; k++) {
+    const s = shots[k];
+    $("#liveShotlist").insertAdjacentHTML("beforeend",
+      `<div class="live-row"><span class="num">#${s.shot}</span>
+        <div><div class="lr-type">${s.type}${s.is_staging ? " · staging" : ""}</div>
+        <div class="lr-body">${esc(s.caption || "")}</div></div></div>`);
+    $("#liveCount").textContent = `${k + 1} shots`;
+    $("#liveShotlist").scrollTop = $("#liveShotlist").scrollHeight;
+    await tick(DEMO ? 280 : 0);
+  }
+  await tick(450);
+  return shots;
+}
+
+/* ============================ review shot list ============================ */
+const PALETTE = ["#e0524f", "#4f8fe0", "#3fae6a", "#e8a23f", "#9b6ad8", "#3fb8a9", "#d85fb0", "#a9744f", "#9aa83f", "#3f5fae"];
+const initial = n => (n || "?").trim().charAt(0).toUpperCase();
+const unionChars = shots => { const o = []; shots.forEach(s => (s.characters || []).forEach(c => { if (!o.includes(c)) o.push(c); })); return o; };
+function charColor(name) {
+  const i = (state.allChars || []).indexOf(name);
+  return PALETTE[(i < 0 ? (state.allChars || []).length : i) % PALETTE.length];
+}
+const dot = n => `<span class="char-dot" style="background:${charColor(n)}">${initial(n)}</span>`;
+const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+
+function renderShots() {
+  if (!state.allChars) state.allChars = unionChars(state.shots);
+  state.shots.forEach(s => (s.characters || []).forEach(c => { if (!state.allChars.includes(c)) state.allChars.push(c); }));
+
+  $("#reviewTitle").textContent = state.current?.name || "Project";
+  $("#reviewMetaLine").innerHTML =
+    `Scene ${esc(state.current?.scene || "01")} <span class="dot">·</span> ${state.shots.length} shots ` +
+    `<span class="dot">·</span> ${state.allChars.length} characters`;
+  renderLegend();
+
+  $("#shotGrid").innerHTML = state.shots.map((s, i) => `
+    <div class="shotcard2" data-i="${i}">
+      <div class="sc-top">
+        <span class="drag" title="drag to reorder">⠿</span>
+        <span class="num">${String(s.shot).padStart(2, "0")}</span>
+        <div class="sc-type"><label>Shot type</label><input class="type-input" data-f="type" value="${esc(s.type)}"></div>
+        <button class="del" title="Delete shot">${TRASH}</button>
+      </div>
+      <div class="sc-grid">
+        <div class="fieldblock"><label>Scene description</label><textarea data-f="caption" rows="3">${esc(s.caption || "")}</textarea></div>
+        <div class="fieldblock"><label>Action</label><textarea data-f="action" rows="3">${esc(s.action || "")}</textarea></div>
+        <div class="fieldblock"><label>Setting</label><input data-f="setting" value="${esc(s.setting || "")}"></div>
+        <div class="fieldblock"><label>Mood</label><input data-f="mood" value="${esc(s.mood || "")}"></div>
+      </div>
+      <div class="sc-chars"><label>Characters in shot</label>
+        <div class="chiprow">
+          ${(s.characters || []).map(c => `<span class="mini-chip">${dot(c)}${esc(c)}<span class="x" data-c="${esc(c)}">✕</span></span>`).join("")}
+          <input class="addchar" placeholder="Add…">
+        </div>
+      </div>
+      <details class="imgprompt"><summary>Image prompt (advanced)</summary>
+        <textarea data-f="image_prompt" rows="3">${esc(s.image_prompt || "")}</textarea></details>
+    </div>`).join("");
+}
+
+function renderLegend() {
+  $("#legendChips").innerHTML = (state.allChars || []).map(c =>
+    `<span class="char-chip">${dot(c)}${esc(c)}<span class="x" data-c="${esc(c)}">✕</span></span>`).join("");
+  $$("#legendChips .x").forEach(x => x.addEventListener("click", () => {
+    const c = x.dataset.c;
+    state.allChars = state.allChars.filter(n => n !== c);
+    state.shots.forEach(s => s.characters = (s.characters || []).filter(n => n !== c));
+    renderShots(); markDirty();
+  }));
+}
+
+function markDirty() {
+  $("#saveState").textContent = "Unsaved changes…";
+  if (state.current) { state.current.shots = state.shots; state.current.shotCount = state.shots.length; }
+}
+function saveNow() { if (state.current) { state.current.shots = state.shots; saveProjects(); } $("#saveState").textContent = "All changes saved."; }
+
+// --- delegated editing on the shot list ---
+const grid = $("#shotGrid");
+grid.addEventListener("input", e => {
+  const f = e.target.dataset.f; if (!f) return;
+  const i = +e.target.closest(".shotcard2").dataset.i;
+  state.shots[i][f] = e.target.value; markDirty();
+});
+grid.addEventListener("click", e => {
+  if (e.target.closest(".del")) {
+    const i = +e.target.closest(".shotcard2").dataset.i;
+    state.shots.splice(i, 1); state.shots.forEach((s, k) => s.shot = k + 1);
+    renderShots(); markDirty(); return;
+  }
+  const x = e.target.closest(".mini-chip .x");
+  if (x) {
+    const i = +x.closest(".shotcard2").dataset.i, c = x.dataset.c;
+    state.shots[i].characters = (state.shots[i].characters || []).filter(n => n !== c);
+    renderShots(); markDirty();
+  }
+});
+grid.addEventListener("keydown", e => {
+  if (e.target.classList.contains("addchar") && e.key === "Enter") {
+    e.preventDefault();
+    const i = +e.target.closest(".shotcard2").dataset.i, v = e.target.value.trim();
+    if (!v) return;
+    state.shots[i].characters = state.shots[i].characters || [];
+    if (!state.shots[i].characters.includes(v)) state.shots[i].characters.push(v);
+    if (!state.allChars.includes(v)) state.allChars.push(v);
+    renderShots(); markDirty();
+  }
+});
+
+$("#charAddBtn").addEventListener("click", () => {
+  const v = $("#charInput").value.trim(); if (!v) return;
+  if (!state.allChars.includes(v)) state.allChars.push(v);
+  $("#charInput").value = ""; renderLegend(); markDirty();
+});
+$("#charInput").addEventListener("keydown", e => { if (e.key === "Enter") $("#charAddBtn").click(); });
+$("#addShotBtn").addEventListener("click", () => {
+  state.shots.push({ shot: state.shots.length + 1, type: "MEDIUM SHOT", caption: "", action: "",
+    setting: "", mood: "", characters: [], image_prompt: "", setup: state.shots[0]?.setup || "scene", is_staging: false });
+  renderShots(); markDirty();
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+});
+$("#saveShots").addEventListener("click", saveNow);
+$("#toStaging").addEventListener("click", async () => { saveNow(); go("staging"); await renderStaging(); });
+
+/* ============================ staging (edit / regenerate / upload) ============================ */
+const sp = shot => $(`.spanel[data-shot="${shot}"]`);
+function spanelHTML(s) {
+  const img = s._img;
+  return `<div class="spanel" data-shot="${s.shot}">
+    <div class="simg ${img ? "" : "empty"}" ${img ? `style="background-image:url('${img}')"` : ""} data-state="${img ? "" : "drawing…"}"></div>
+    <div class="smeta">#${s.shot} · ${esc(s.type)} · staging</div>
+    <div class="sactions">
+      <button class="sbtn regen">↻ Regenerate</button>
+      <button class="sbtn edit">✎ Edit</button>
+      <label class="sbtn upload">⬆ Upload<input type="file" accept="image/*" hidden></label>
+    </div>
+    <div class="seditor hidden">
+      <label>Staging description — edit, then regenerate</label>
+      <textarea rows="3">${esc(s.image_prompt || s.caption || "")}</textarea>
+      <button class="sbtn primary applyedit">↻ Regenerate with changes</button>
+    </div>
+  </div>`;
+}
+function setStagingImg(shot, img) {
+  const p = sp(shot); if (!p) return;
+  const im = p.querySelector(".simg"); im.classList.remove("empty"); im.dataset.state = ""; im.style.backgroundImage = `url('${img}')`;
+}
+function setStagingState(shot, st) {
+  const p = sp(shot); if (!p) return;
+  const im = p.querySelector(".simg"); im.classList.add("empty"); im.style.backgroundImage = ""; im.dataset.state = st;
+}
+function regenStaging(shot) {
+  const s = state.shots.find(x => x.shot === shot);
+  setStagingState(shot, "redrawing…");
+  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setStagingImg(shot, s._img); play("tick"); }, DEMO ? 800 : 0);
+}
+async function renderStaging() {
+  const staging = state.shots.filter(s => s.is_staging);
+  $("#stagingBoard").innerHTML = staging.map(spanelHTML).join("");
+  if (DEMO) {
+    await tick(600);
+    for (const s of staging) { if (!s._img) s._img = demoImg(s.shot); setStagingImg(s.shot, s._img); }
+  }
+}
+const sboard = $("#stagingBoard");
+sboard.addEventListener("click", e => {
+  const card = e.target.closest(".spanel"); if (!card) return;
+  const shot = +card.dataset.shot;
+  if (e.target.closest(".regen")) return regenStaging(shot);
+  if (e.target.closest(".edit")) return card.querySelector(".seditor").classList.toggle("hidden");
+  if (e.target.closest(".applyedit")) {
+    state.shots.find(x => x.shot === shot).image_prompt = card.querySelector(".seditor textarea").value;
+    card.querySelector(".seditor").classList.add("hidden"); return regenStaging(shot);
+  }
+  const im = e.target.closest(".simg");
+  if (im && !im.classList.contains("empty")) { const s = state.shots.find(x => x.shot === shot); if (s._img) openLightbox([s._img], 0); }
+});
+sboard.addEventListener("change", e => {
+  if (e.target.type === "file" && e.target.files[0]) {
+    const shot = +e.target.closest(".spanel").dataset.shot, s = state.shots.find(x => x.shot === shot);
+    const r = new FileReader();
+    r.onload = () => { s._img = r.result; setStagingImg(shot, s._img); play("tick"); };
+    r.readAsDataURL(e.target.files[0]);
+  }
+});
+$("#toGenerate").addEventListener("click", () => { go("generate"); runGeneration(); });
+
+/* ============================ drawing panels (status card + QA pills) ============================ */
+const gp = shot => $(`.gpanel[data-shot="${shot}"]`);
+function gpanelHTML(s) {
+  return `<div class="gpanel" data-shot="${s.shot}">
+    <div class="gimg empty" data-state="${s.is_staging ? "" : "queued"}"><span class="gnum">${String(s.shot).padStart(2, "0")}</span></div>
+    <div class="gmeta"><span class="gtype">${esc(s.type)}</span><span class="gright"></span></div>
+    <div class="gactions">
+      <button class="gact dl" title="Download this panel">⬇ Download</button>
+      <button class="gact retry" title="Redraw with the same prompt">↻ Retry</button>
+      <button class="gact editbtn">✎ Edit</button>
+    </div>
+    <div class="geditor hidden">
+      <label>Edit the prompt and/or add feedback, then regenerate</label>
+      <textarea class="gprompt" rows="3">${esc(s.image_prompt || "")}</textarea>
+      <input class="gfeedback" placeholder="Feedback — e.g. “Carter faces left, looser linework, no shading”" />
+      <button class="gact primary regenfb">↻ Regenerate with changes</button>
+    </div></div>`;
+}
+function setGenState(shot, st) { const p = gp(shot); if (p) p.querySelector(".gimg").dataset.state = st; }
+function setGenPill(shot, cls, text) {
+  const p = gp(shot); if (!p) return;
+  if (cls !== "flagged") p.classList.remove("fail");
+  p.querySelector(".gright").innerHTML = `<span class="pill ${cls}">${text}</span>`;
+}
+function setGenImg(shot, img) {
+  const p = gp(shot); if (!p || !img) return;
+  const im = p.querySelector(".gimg"); im.classList.remove("empty"); im.style.backgroundImage = `url('${img}')`;
+  im.onclick = () => { const imgs = state.shots.map(x => x._img).filter(Boolean); openLightbox(imgs, Math.max(0, imgs.indexOf(img))); };
+}
+function setGenFlagged(shot, reason) {
+  const p = gp(shot); if (!p) return; p.classList.add("fail");
+  p.querySelector(".gright").innerHTML = `<span class="pill flagged">QA flagged</span>`;
+  if (!p.querySelector(".greason")) p.querySelector(".gmeta").insertAdjacentHTML("afterend", `<div class="greason">${esc(reason)}</div>`);
+}
+function clearGreason(shot) { const p = gp(shot); if (p) { p.classList.remove("fail"); p.querySelector(".greason")?.remove(); } }
+
+async function runGeneration() {
+  const all = state.shots, derived = all.filter(s => !s.is_staging), totalPanels = all.length;
+  $("#genTitle").textContent = state.current?.name || "Project";
+  $("#genSub").textContent = `Scene ${state.current?.scene || "01"}` + (state.current?.location ? ` — ${state.current.location}` : "");
+  $("#genStateLabel").textContent = "Generating…";
+  $("#genActions").classList.remove("hidden"); $("#resumeBtn").classList.add("hidden");
+  $("#genBoard").innerHTML = all.map(gpanelHTML).join("");
+
+  let approved = 0, flagged = 0, done = 0;
+  const stagingCount = all.filter(s => s.is_staging).length;
+  all.filter(s => s.is_staging).forEach(s => { if (s._img) setGenImg(s.shot, s._img); setGenPill(s.shot, "approved", "Approved"); approved++; done++; });
+  const setProg = () => {
+    const pct = Math.round(done / totalPanels * 100);
+    $("#progressFill").style.width = pct + "%"; $("#progressPct").textContent = pct + "%";
+    $("#progressCount").textContent = `${done} of ${totalPanels} panels`;
+    $("#genApproved").textContent = `${approved} approved`; $("#genFlagged").textContent = `${flagged} flagged`;
+  };
+  setProg();
+  const t0 = Date.now();
+  for (const s of derived) {
+    setGenPill(s.shot, "gen", "Drawing…"); setGenState(s.shot, "drawing…"); await tick(DEMO ? 420 : 0);
+    setGenPill(s.shot, "gen", "QA ×3…"); setGenState(s.shot, "QA…"); await tick(DEMO ? 340 : 0);
+    if (DEMO && s.shot === 5 && !s._tried) {                       // demo: one panel trips QA, shows reason, redraws
+      s._tried = true;
+      setGenFlagged(s.shot, "STYLE: figure shaded like finished art instead of a rough sketch.");
+      flagged++; setProg(); play("error"); await tick(1100);
+      setGenPill(s.shot, "gen", "Redrawing…"); flagged--; setProg(); await tick(500);
+    }
+    s._img = DEMO ? demoImg(s.shot) : s._img;
+    setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved");
+    approved++; done++; play("tick");
+    const per = (Date.now() - t0) / Math.max(1, done - stagingCount);
+    const eta = Math.round(per * (totalPanels - done) / 1000);
+    $("#progressEta").textContent = done < totalPanels ? `~${eta}s left` : "Finishing up…";
+    setProg();
+  }
+  $("#genStateLabel").textContent = "Generation complete";
+  play("done");
+  if (state.current) { state.current.status = "done"; state.current.panelsDone = totalPanels; state.current.panelsTotal = totalPanels; saveProjects(); }
+  await tick(700); buildBoard();
+}
+
+function regenPanel(shot) {
+  const s = state.shots.find(x => x.shot === shot);
+  setGenPill(shot, "gen", "Redrawing…"); clearGreason(shot);
+  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setGenImg(shot, s._img); setGenPill(shot, "approved", "Approved"); play("tick"); }, DEMO ? 800 : 0);
+}
+// per-panel actions: download · retry · edit (prompt + feedback) → regenerate
+$("#genBoard").addEventListener("click", e => {
+  const card = e.target.closest(".gpanel"); if (!card) return;
+  const shot = +card.dataset.shot, s = state.shots.find(x => x.shot === shot);
+  if (e.target.closest(".dl")) {
+    if (s._img) dl(s._img, `${(state.current?.name || "panel").replace(/\s+/g, "_")}_shot${String(shot).padStart(2, "0")}.png`);
+    return;
+  }
+  if (e.target.closest(".retry")) return regenPanel(shot);
+  if (e.target.closest(".editbtn")) return card.querySelector(".geditor").classList.toggle("hidden");
+  if (e.target.closest(".regenfb")) {
+    s.image_prompt = card.querySelector(".gprompt").value;
+    s._feedback = card.querySelector(".gfeedback").value;   // appended to the prompt by the backend
+    card.querySelector(".geditor").classList.add("hidden");
+    return regenPanel(shot);
+  }
+});
+
+/* ============================ storyboard ============================ */
+function buildBoard(jump) {
+  go("board");
+  $("#boardMeta").textContent = `${state.current?.name || "Project"} · scene ${state.current?.scene || ""}`;
+  state.pages = DEMO ? demoPages() : (state.pages || []);
+  $("#pages").innerHTML = state.pages.map((p, i) => `<img src="${p}" loading="lazy" data-i="${i}" alt="page ${i + 1}" />`).join("");
+  $$("#pages img").forEach(im => im.addEventListener("click", () => openLightbox(state.pages, +im.dataset.i)));
+}
+$("#downloadAll").addEventListener("click", () => {
+  (state.pages || []).forEach((src, i) => dl(src, `${(state.current?.name || "storyboard").replace(/\s+/g, "_")}_p${String(i + 1).padStart(2, "0")}.png`));
+});
+
+/* ============================ lightbox (prev / next) ============================ */
+const lb = $("#lightbox"), lbImg = $("#lightboxImg"), lbCount = $("#lbCount");
+function openLightbox(list, i) { state.lb = { list, i }; showLb(); }
+function showLb() {
+  const { list, i } = state.lb; if (!list.length) return;
+  lbImg.src = list[i]; lb.classList.add("open");
+  lbCount.textContent = `${i + 1} / ${list.length}`;
+  $("#lbPrev").style.visibility = i > 0 ? "visible" : "hidden";
+  $("#lbNext").style.visibility = i < list.length - 1 ? "visible" : "hidden";
+}
+$("#lbPrev").addEventListener("click", e => { e.stopPropagation(); if (state.lb.i > 0) { state.lb.i--; showLb(); } });
+$("#lbNext").addEventListener("click", e => { e.stopPropagation(); if (state.lb.i < state.lb.list.length - 1) { state.lb.i++; showLb(); } });
+lb.addEventListener("click", e => { if (e.target === lb || e.target === lbImg) lb.classList.remove("open"); });
+document.addEventListener("keydown", e => {
+  if (!lb.classList.contains("open")) return;
+  if (e.key === "Escape") lb.classList.remove("open");
+  if (e.key === "ArrowLeft") $("#lbPrev").click();
+  if (e.key === "ArrowRight") $("#lbNext").click();
+});
+
+/* ============================ panel helpers ============================ */
+function panelHTML(s, img, st = "", dot = "") {
+  return `<div class="panel" data-shot="${s.shot}">
+    <div class="img ${img ? "" : "empty"}" ${img ? `style="background-image:url('${img}')"` : ""} data-state="${st}">
+      ${dot ? `<span class="statusdot ${dot}"></span>` : ""}</div>
+    <div class="cap">#${s.shot} · ${s.type}${s.is_staging ? " · staging" : ""}</div></div>`;
+}
+function setDot(shot, cls, label) {
+  const p = $(`.panel[data-shot="${shot}"]`); if (!p) return;
+  const im = p.querySelector(".img"); im.dataset.state = label;
+  im.innerHTML = `<span class="statusdot ${cls}"></span>`;
+}
+function setPanelImg(shot, img, dot) {
+  const p = $(`.panel[data-shot="${shot}"]`); if (!p) return;
+  p.classList.remove("fail");
+  const im = p.querySelector(".img"); im.classList.remove("empty");
+  if (img) im.style.backgroundImage = `url('${img}')`;
+  im.innerHTML = dot ? `<span class="statusdot ${dot}"></span>` : "";
+  im.style.cursor = "zoom-in";
+  im.onclick = () => { const imgs = state.shots.map(x => x._img).filter(Boolean); openLightbox(imgs, imgs.indexOf(img)); };
+}
+function showFail(shot, reason) {
+  const p = $(`.panel[data-shot="${shot}"]`); if (!p) return;
+  p.classList.add("fail");
+  p.querySelector(".img").innerHTML = `<span class="statusdot fail"></span>`;
+  p.querySelector(".img").dataset.state = "QA flagged";
+  if (!p.querySelector(".reason")) {
+    const m = reason.match(/^([A-Z &]+):/);
+    const html = m ? `<b>${m[1]}</b>${reason.slice(m[0].length)}` : reason;
+    p.insertAdjacentHTML("beforeend", `<div class="reason">${html}</div>`);
+  }
+}
+function clearReason(shot) { const p = $(`.panel[data-shot="${shot}"]`); p && p.querySelector(".reason")?.remove(); }
+function bindBoardZoom(sel) {
+  $$(`${sel} .panel .img`).forEach(el => el.addEventListener("click", () => {
+    const bg = el.style.backgroundImage; if (!bg) return;
+    openLightbox([bg.slice(5, -2)], 0);
+  }));
+}
+
+/* ============================ utils ============================ */
+const tick = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const today = () => new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function dl(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+
+/* ============================ backend contract (used when deployed) ============================ */
+async function apiBreakdown() {
+  const form = new FormData();
+  if (state.file) form.append("script", state.file);
+  form.append("project", state.current.name); form.append("scene", state.current.scene);
+  form.append("format", state.current.format); form.append("editorial", "1");
+  form.append("mode", state.uploadMode || "script");
+  const { id } = await (await fetch("/api/breakdown", { method: "POST", body: form })).json();
+  state.current.id = id;
+  for (;;) {
+    await tick(2500);
+    const st = await (await fetch(`/api/status?id=${id}`)).json();
+    if (st.status === "shots_ready") return st.shots;
+    if (st.status === "error") { play("error"); alert(st.message || "Breakdown failed"); return []; }
+  }
+}
+
+/* ============================ demo data ============================ */
+const DEMO_ASSETS = (typeof window !== "undefined" && window.DEMO_ASSETS) || null;
+function demoImg(n) { return DEMO_ASSETS ? DEMO_ASSETS["panel" + (((n - 1) % 4) + 1)] : `demo/panel${((n - 1) % 4) + 1}.png`; }
+function demoPages() { return DEMO_ASSETS ? [DEMO_ASSETS.page1, DEMO_ASSETS.page2] : ["demo/page1.png", "demo/page2.png"]; }
+function demoShots() {
+  const S = (shot, type, is_staging, caption, action, setting, mood, characters, image_prompt) =>
+    ({ shot, type, setup: "lab_floor", is_staging, caption, action, setting, mood, characters, image_prompt });
+  return [
+    S(1, "WIDE ESTABLISHING", true,
+      "The lab floor at night.\nFour figures spread across the cold, vast space.\nThe phoenix turbine glows behind them.",
+      "Establishes the lab and everyone's position before the confrontation begins.",
+      "High-tech aerospace lab, night, wide from the entrance",
+      "Cold, sterile, charged with tension",
+      ["Carter", "Tiffany", "John", "Alexander"],
+      "Wide establishing staging shot of the lab; JOHN far-left crouched with a mop, CARTER center-left, TIFFANY center, ALEXANDER far-right facing into the scene."),
+    S(2, "MEDIUM", false,
+      "Carter and Tiffany stand close by the glass partition.\nA charged, quiet beat between them.",
+      "Carter leans toward Tiffany; she holds her ground, arms crossed.",
+      "Beside the floor-to-ceiling glass partition",
+      "Cool rim light, intimate tension",
+      ["Carter", "Tiffany"],
+      "Medium two-shot, CARTER left and TIFFANY right facing each other near the glass."),
+    S(3, "CLOSE UP", false,
+      "Carter's face tightens — outrage, barely held.",
+      "Carter's expression hardens as he registers the insult.",
+      "Tight on Carter, lab bokeh behind",
+      "Hard key light, simmering anger",
+      ["Carter"],
+      "Close-up on CARTER, jaw tight, eyes narrowed."),
+    S(4, "INSERT", false,
+      "A mop and metal bucket on the wet floor.",
+      "Cutaway to the janitor's bucket — the spill that started it all.",
+      "Low angle on the lab floor",
+      "Flat practical light, mundane",
+      [],
+      "Insert: a mop and metal bucket on the wet floor, turbine soft behind."),
+    S(5, "REACTION", false,
+      "John looks up from his work, uneasy.",
+      "John pauses mid-mop, sensing the room shift.",
+      "Far side of the lab floor",
+      "Dim, watchful",
+      ["John"],
+      "Reaction medium on JOHN crouched with the mop, looking up toward the group."),
+    S(6, "WIDE", false,
+      "Alexander strides toward the group, surveying the room.",
+      "Alexander enters and walks toward Carter and Tiffany, gaze sweeping the floor.",
+      "Lab floor, from behind Alexander",
+      "Commanding, cold authority",
+      ["Alexander", "Carter", "Tiffany", "John"],
+      "Wide shot, ALEXANDER far-right seen from a three-quarter back angle moving toward the group at center-left."),
+  ];
+}
+function demoProjects() {
+  return [
+    { id: "d1", name: "Episode 1 The Track Breaker", scene: "01", location: "South Mumbai", status: "ready", panelsDone: 0, panelsTotal: 32, date: "4d ago" },
+    { id: "d2", name: "Episode 1 The Track Breaker", scene: "01", location: "South Mumbai Streets & Speedway Prime", status: "stopped", panelsDone: 6, panelsTotal: 16, date: "4d ago" },
+    { id: "d3", name: "Episode 2 The Ghost Drift", scene: "01", location: "Race Track", status: "ready", panelsDone: 0, panelsTotal: 32, date: "4d ago" },
+    { id: "d4", name: "Zero Day Payback", scene: "01", location: "The lab", status: "done", panelsDone: 6, panelsTotal: 6, date: "5d ago" },
+  ];
+}
+
+/* ============================ boot ============================ */
+const badge = $("#demoBadge");
+if (DEMO) { badge.textContent = "demo"; badge.classList.remove("hidden"); }
+else {
+  // deployed: ping the API so we can see the backend is live
+  fetch("/api/hello").then(r => r.ok ? r.json() : null).then(d => {
+    if (d && d.ok) {
+      badge.textContent = "API live"; badge.style.color = "var(--ok)";
+      badge.style.borderColor = "oklch(0.6 0.1 150 / 0.5)"; badge.classList.remove("hidden");
+    }
+  }).catch(() => {});
+}
+renderProjects();
+go("projects");
