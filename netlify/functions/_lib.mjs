@@ -150,6 +150,9 @@ export const STYLE_CANDIDATES = [
 ];
 export const styleCandidatePrompt = (c) =>
   `${STYLE_SUBJECT} ${c.clause} The ONLY colour anywhere is the two name labels; every drawn line is otherwise black on white.`;
+// The explicit words for a chosen preset style ("" for uploads/unknown) — fed into every panel so the
+// model is TOLD the look, not left to infer it from the reference image alone (which it under-uses).
+export const styleClauseFor = (choice) => (STYLE_CANDIDATES.find((c) => c.id === choice)?.clause) || "";
 
 // Appended on a content-moderation block (clothes the faceless figures so they don't read as nude).
 export const SOFTEN_CLAUSE =
@@ -159,32 +162,42 @@ export const SOFTEN_CLAUSE =
 
 const isModeration = (s) => /moderation_blocked|safety|content_policy|rejected/i.test(String(s));
 
-// Returns base64 PNG. Auto-softens + retries once on a moderation block.
-// `refs` = array of PNG byte buffers (style anchor, staging frame). With refs we hit the
-// /v1/images/edits endpoint (multipart) so the model anchors to them; without, the plain
-// text-to-image endpoint. The reference roles are explained in the prompt by the caller.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Returns base64 PNG. `refs` = array of PNG byte buffers (style anchor, staging frame). With refs we
+// hit the /v1/images/edits endpoint (multipart) so the model anchors to them; without, the plain
+// text-to-image endpoint. Auto-softens once on a moderation block, and retries transient upstream
+// failures (5xx / 429 / connection resets — the "image 503: upstream connect error" the user saw)
+// with backoff so one OpenAI hiccup doesn't fail the panel.
 export async function generateImageB64(prompt, refs = []) {
   const hasRefs = Array.isArray(refs) && refs.length > 0;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let softened = false;
+  const MAX = 5;
+  for (let attempt = 1; attempt <= MAX; attempt++) {
     let res;
-    if (hasRefs) {
-      const fd = new FormData();
-      fd.append("model", IMAGE_MODEL);
-      fd.append("prompt", prompt);
-      fd.append("size", IMAGE_SIZE);
-      fd.append("n", "1");
-      refs.forEach((buf, i) => fd.append("image[]", new Blob([buf], { type: "image/png" }), `ref${i}.png`));
-      res = await fetch(IMAGE_EDIT_URL, {
-        method: "POST",
-        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, // let fetch set the multipart boundary
-        body: fd,
-      });
-    } else {
-      res = await fetch("https://api.openai.com/v1/images/generations", {
-        method: "POST",
-        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: IMAGE_SIZE, n: 1 }),
-      });
+    try {
+      if (hasRefs) {
+        const fd = new FormData();
+        fd.append("model", IMAGE_MODEL);
+        fd.append("prompt", prompt);
+        fd.append("size", IMAGE_SIZE);
+        fd.append("n", "1");
+        refs.forEach((buf, i) => fd.append("image[]", new Blob([buf], { type: "image/png" }), `ref${i}.png`));
+        res = await fetch(IMAGE_EDIT_URL, {
+          method: "POST",
+          headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, // let fetch set the multipart boundary
+          body: fd,
+        });
+      } else {
+        res = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: IMAGE_SIZE, n: 1 }),
+        });
+      }
+    } catch (e) {
+      if (attempt < MAX) { await sleep(1200 * attempt); continue; }  // network/connection reset
+      throw new Error("image network error: " + String(e).slice(0, 150));
     }
     if (res.ok) {
       const data = await res.json();
@@ -193,10 +206,11 @@ export async function generateImageB64(prompt, refs = []) {
       throw new Error("image API returned no data");
     }
     const errText = await res.text();
-    if (attempt === 0 && isModeration(errText)) { prompt = prompt + SOFTEN_CLAUSE; continue; }
+    if (!softened && isModeration(errText)) { prompt += SOFTEN_CLAUSE; softened = true; continue; } // clothe + retry
+    if ((res.status >= 500 || res.status === 429) && attempt < MAX) { await sleep(1200 * attempt); continue; } // transient
     throw new Error(`image ${res.status}: ${errText.slice(0, 240)}`);
   }
-  throw new Error("image generation failed");
+  throw new Error("image generation failed after retries");
 }
 
 // ===================== QA (Claude vision) =====================
@@ -207,7 +221,7 @@ Checks (any failure => pass=false):
 1. CHARACTERS: every character in the card is present; correct FULL-NAME labels in their assigned colours.
 2. POSITIONS & FACING: left/right/depth and who-faces/approaches-whom match the action/caption intent (a figure walking toward the camera when they should engage others in-frame is a FAIL).
 3. ACTION & FRAMING: the pose/action and shot type (close-up vs wide etc.) match the card.
-4. STYLE: if a STYLE reference is provided, the panel must match ITS drawing medium and level of finish (linework, shading/none); if not, judge it as a rough black-and-white blocking sketch. The only colour should be the name labels.
+4. STYLE: assess style ONLY if a STYLE reference image is provided — then the panel must match ITS drawing medium and level of finish (e.g. flat clean linework vs. soft grayscale shading). If NO style reference is provided, SKIP the style check entirely — do NOT assume any particular style and do NOT flag for shading/finish. The only colour anywhere should be the character name labels.
 5. CONTINUITY (apply ONLY when a STAGING reference is provided): the panel must share the SAME location and key props, and keep the characters' left-to-right order consistent with the staging frame (someone left of another in staging must not appear right of them here unless it is a deliberate reverse angle). Skip this check entirely if no staging reference is given.
 "issues": short specific problems naming the check (empty if pass). "fix": one concrete correction to append to the prompt on regeneration (empty if pass).`;
 

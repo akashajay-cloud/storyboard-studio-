@@ -5,7 +5,7 @@
 // shots), passed to gpt-image-2's edits endpoint AND to QA. The prompt then carries only the delta.
 import {
   authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel,
-  readStyleImg, coreBlocking, labelInstruction,
+  readStyleImg, coreBlocking, labelInstruction, styleClauseFor,
 } from "./_lib.mjs";
 
 export default async (req) => {
@@ -52,9 +52,15 @@ export default async (req) => {
       : styleB64
       ? "The reference image is the STYLE reference: match its drawing medium and linework exactly, but IGNORE its subject. Now draw this shot. "
       : "";
+    // Explicit words for the SELECTED style (e.g. grayscale = soft shading) so the model renders the
+    // chosen look instead of drifting to its default — the style reference image alone isn't enough.
+    const styleText = styleClauseFor(project.styleChoice);
+    const styleDirective = styleText
+      ? " STYLE — match this EXACTLY and add no rendering it does not call for: " + styleText
+      : (styleB64 ? " STYLE — match the drawing medium, linework and finish of the style reference image exactly." : "");
     let prompt = promptOverride
-      ? preamble + promptOverride
-      : preamble + `${shot.type}. ` + (coreBlocking(shot.image_prompt) || shot.action || shot.caption || "") + labelInstruction(shot.characters, project.styles);
+      ? preamble + promptOverride + styleDirective
+      : preamble + `${shot.type}. ` + (coreBlocking(shot.image_prompt) || shot.action || shot.caption || "") + labelInstruction(shot.characters, project.styles) + styleDirective;
     if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;
 
     let b64 = await generateImageB64(prompt, refs);

@@ -69,6 +69,10 @@ body {
   font-style: normal; font-size: 12px; border: 1px solid var(--border); transition: all .2s;
 }
 .step:hover { color: var(--foreground); background: var(--secondary); }
+/* a step whose prerequisite isn't finished yet — not clickable */
+.step.locked { opacity: 0.38; cursor: not-allowed; }
+.step.locked:hover { color: var(--muted-foreground); background: transparent; }
+.btn:disabled, .btn[disabled] { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .step.done i { background: var(--ok); color: oklch(0.2 0.03 150); border-color: transparent; }
 .step.current { color: var(--foreground); }
 .step.current i { background: var(--primary); color: var(--primary-foreground); border-color: transparent;

@@ -11,6 +11,7 @@ const state = {
   file: null,
   current: null,          // active project
   projects: [],
+  unlocked: 0,            // furthest step index the user may navigate to (gates skipping ahead)
   soundOn: localStorage.getItem("sb_sound") !== "0",
   lb: { list: [], i: 0 },
 };
@@ -66,11 +67,20 @@ function go(step) {
     const i = STEPS.indexOf(b.dataset.step);
     b.classList.toggle("current", i === idx);
     b.classList.toggle("done", i > -1 && i < idx);
+    b.classList.toggle("locked", i > state.unlocked);   // can't jump ahead to an unfinished step
   });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+// Steps unlock only as their prerequisite finishes, so you can't reach (e.g.) Generate before the
+// staging frames exist. `unlockStep` only ever moves forward; `resetUnlock` sets it (new project).
+function applyStepLocks() {
+  $$(".step").forEach(b => b.classList.toggle("locked", STEPS.indexOf(b.dataset.step) > state.unlocked));
+}
+function unlockStep(step) { state.unlocked = Math.max(state.unlocked, STEPS.indexOf(step)); applyStepLocks(); }
+function resetUnlock(step) { state.unlocked = STEPS.indexOf(step); applyStepLocks(); }
 $$(".step").forEach(b => b.addEventListener("click", () => {
   if (state.step === "projects") return;
+  if (STEPS.indexOf(b.dataset.step) > state.unlocked) return;   // locked — finish the current step first
   go(b.dataset.step);
 }));
 $$("[data-goto]").forEach(b => b.addEventListener("click", () => go(b.dataset.goto)));
@@ -148,12 +158,13 @@ function renderProjects() {
 document.addEventListener("click", e => {
   if (!e.target.closest(".kebab-wrap")) $$("#projectGrid .pmenu").forEach(m => m.classList.add("hidden"));
 });
-function newProject() { state.current = null; state.file = null; resetUpload(); go("upload"); }
+function newProject() { state.current = null; state.file = null; resetUpload(); resetUnlock("upload"); go("upload"); }
 function openProject(id) {
   const p = state.projects.find(x => x.id === id); if (!p) return;
   state.current = p;
   state.shots = p.shots || demoShots();
   state.allChars = unionChars(state.shots);
+  resetUnlock(p.status === "done" ? "board" : "style");   // finished projects open fully; others re-walk staging/generate
   if (p.status === "done") { buildBoard(true); }
   else { renderShots(); go("review"); }
 }
@@ -194,11 +205,13 @@ $("#startBtn").addEventListener("click", async () => {
   state.current = { id: "p" + Date.now(), name, scene: "01", format: "9:16", location: "",
                     status: "working", date: "just now", panelsDone: 0, panelsTotal: 0 };
   state.projects.unshift(state.current); saveProjects();
+  resetUnlock("upload");                        // new run: re-gate everything ahead
   go("analyzing");
   state.shots = await runBreakdown();           // streams into the split screen
   state.allChars = unionChars(state.shots);
   state.current.shots = state.shots; state.current.shotCount = state.shots.length; saveProjects();
   renderShots();
+  if (state.shots.length) unlockStep("style");  // shot list ready -> Review + Style reachable
   play("ready");
   go("review");
 });
@@ -444,6 +457,7 @@ $("#useStyleBtn").addEventListener("click", async () => {
     }
   }
   if (state.current) { state.current.styleChoice = state.styleChoice; saveProjects(); }
+  unlockStep("staging");
   go("staging"); await renderStaging();
 });
 
@@ -490,7 +504,7 @@ function regenStaging(shot) {
   const s = state.shots.find(x => x.shot === shot);
   startStagingLoad(shot, "Redrawing");
   if (DEMO) { setTimeout(() => { s._img = demoImg(shot); setStagingImg(shot, s._img); play("tick"); }, 1600); return; }
-  genPanelReal(shot).then(r => {
+  genPanelReal(shot, {}, stage => { if (stage === "qa") startCountdown("s" + shot, sp(shot)?.querySelector(".simg"), 25, "QA"); }).then(r => {
     if (r.status === "error") return setStagingPending(shot, "Error — retry");
     s._img = panelURL(shot); setStagingImg(shot, s._img); play("tick");
   });
@@ -498,16 +512,21 @@ function regenStaging(shot) {
 async function generateOneStaging(s) {
   startStagingLoad(s.shot, "Drawing");                 // shimmer + ETA on THIS panel only
   if (DEMO) { await tick(1500 + Math.random() * 900); s._img = demoImg(s.shot); setStagingImg(s.shot, s._img); play("tick"); return; }
-  const r = await genPanelReal(s.shot);
+  const r = await genPanelReal(s.shot, {}, stage => { if (stage === "qa") startCountdown("s" + s.shot, sp(s.shot)?.querySelector(".simg"), 25, "QA"); });
   if (r.status === "error") return setStagingPending(s.shot, "Error — retry");
   s._img = panelURL(s.shot); setStagingImg(s.shot, s._img); play("tick");
 }
 async function renderStaging() {
+  // Generate is locked until every staging frame exists — derived panels must anchor to them.
+  const gbtn = $("#toGenerate");
+  if (gbtn) { gbtn.disabled = true; gbtn.title = "Drawing the staging frames first…"; }
   const staging = state.shots.filter(s => s.is_staging);
   $("#stagingBoard").innerHTML = staging.map(spanelHTML).join("");
   const pending = staging.filter(s => !s._img);
   pending.forEach(s => setStagingQueued(s.shot));      // everything starts as "Queued"
   await runQueue(pending, 2, generateOneStaging);      // 2 at a time; next starts as one finishes
+  if (gbtn) { gbtn.disabled = false; gbtn.title = ""; } // all staging frames ready
+  unlockStep("generate");
 }
 const sboard = $("#stagingBoard");
 sboard.addEventListener("click", e => {
@@ -530,7 +549,7 @@ sboard.addEventListener("change", e => {
     r.readAsDataURL(e.target.files[0]);
   }
 });
-$("#toGenerate").addEventListener("click", () => { go("generate"); runGeneration(); });
+$("#toGenerate").addEventListener("click", () => { if ($("#toGenerate").disabled) return; go("generate"); runGeneration(); });
 
 /* ============================ drawing panels (status card + QA pills) ============================ */
 const gp = shot => $(`.gpanel[data-shot="${shot}"]`);
@@ -612,7 +631,7 @@ async function runGeneration() {
     await runQueue(derived, 3, async (s) => {                 // 3 panels at a time; rest queued
       const im = gp(s.shot)?.querySelector(".gimg");
       setGenPill(s.shot, "gen", "Drawing…"); startCountdown("g" + s.shot, im, 60, "Drawing");
-      const r = await genPanelReal(s.shot);
+      const r = await genPanelReal(s.shot, {}, stage => { if (stage === "qa") { setGenPill(s.shot, "gen", "QA…"); startCountdown("g" + s.shot, im, 25, "QA"); } });
       stopCountdown("g" + s.shot, im);
       if (r.status === "approved") { s._img = panelURL(s.shot); setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved"); approved++; }
       else if (r.status === "flagged") { s._img = panelURL(s.shot); setGenImg(s.shot, s._img); setGenFlagged(s.shot, r.reason || "QA flagged"); flagged++; play("error"); }
@@ -623,6 +642,7 @@ async function runGeneration() {
   $("#genStateLabel").textContent = "All panels done — review them, then create your storyboard.";
   $("#createBoardBtn").classList.remove("hidden");
   play("done");
+  unlockStep("board");
   if (state.current) { state.current.status = "done"; state.current.panelsDone = totalPanels; state.current.panelsTotal = totalPanels; saveProjects(); }
 }
 $("#createBoardBtn").addEventListener("click", () => buildBoard());
@@ -637,7 +657,7 @@ function regenPanel(shot, opts) {
     return;
   }
   startCountdown("g" + shot, im, 60, "Drawing");
-  genPanelReal(shot, opts).then(r => {
+  genPanelReal(shot, opts, stage => { if (stage === "qa") { setGenPill(shot, "gen", "QA…"); startCountdown("g" + shot, im, 25, "QA"); } }).then(r => {
     stopCountdown("g" + shot, im);
     if (r.status === "error") { setGenPill(shot, "flagged", "Error"); setGenFlagged(shot, r.reason || "Generation failed"); return; }
     s._img = panelURL(shot); setGenImg(shot, s._img);
@@ -766,16 +786,20 @@ async function runQueue(items, concurrency, worker) {
 }
 const panelURL = shot => `/api/panel?id=${encodeURIComponent(state.current.id)}&shot=${shot}&t=${Date.now()}`;
 // Dispatch the per-panel background worker, then poll its status until it's done.
-async function genPanelReal(shotNum, opts = {}) {
+// onStage(stage) fires when the backend phase changes ("drawing" -> "qa") so the UI can show it.
+async function genPanelReal(shotNum, opts = {}, onStage) {
   await fetch("/.netlify/functions/panel-background", {
     method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
     body: JSON.stringify({ id: state.current.id, shot: shotNum, qa: true, prompt: opts.prompt, feedback: opts.feedback }),
   }).catch(() => {});
+  let last = null;
   for (let n = 0; n < 300; n++) {            // poll up to ~12 min
     await tick(2500);
     let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
     const s = (st.shots || []).find(x => x.shot === shotNum);
-    if (s && ["approved", "flagged", "error"].includes(s.panelStatus)) return { status: s.panelStatus, reason: s.reason };
+    if (!s) continue;
+    if (onStage && s.panelStatus && s.panelStatus !== last) { last = s.panelStatus; onStage(s.panelStatus); }
+    if (["approved", "flagged", "error"].includes(s.panelStatus)) return { status: s.panelStatus, reason: s.reason };
   }
   return { status: "error", reason: "timed out" };
 }
