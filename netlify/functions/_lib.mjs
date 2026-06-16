@@ -19,22 +19,29 @@ export const STYLE_CLAUSE =
   "character name labels, and no captions, borders, panel frames, UI elements, or storyboard " +
   "template layout.";
 
-// ---- breakdown system prompt (ported from shot_breakdown.py) ----
-export const BREAKDOWN_PROMPT = `You are a professional storyboard artist and cinematographer working on micro-drama (short-form vertical/landscape drama) productions. Given a script or scene, break it down into a numbered sequence of storyboard shots.
+// ---- breakdown system prompt: composes each shot like a cinematographer ----
+export const BREAKDOWN_PROMPT = `You are a professional storyboard artist and cinematographer working on micro-drama (short-form vertical/landscape drama) productions. Break the script into a numbered sequence of storyboard shots, each COMPOSED like a real cinematographer (shot size, angle, depth, lighting continuity, the 180-degree rule).
 
-For each shot, decide the shot type (e.g. WIDE ESTABLISHING, MEDIUM, CLOSE UP, TRACKING, POV, DYNAMIC ANGLE, INSERT) based on the dramatic beat. Aim for shots that read clearly as single images - split complex actions into multiple shots if needed. KEEP THE BREAKDOWN FOCUSED: at most 30 shots; produce COMPLETE, valid JSON (never stop mid-object). Cover the script faithfully; a separate editorial pass adds extra coverage afterward.
+KEEP IT FOCUSED: at most 30 shots; produce COMPLETE, valid JSON (never stop mid-object). Cover the script faithfully; a separate editorial pass adds coverage afterward.
 
-Return ONLY a JSON array (no markdown fences, no commentary). Each element must have these exact keys:
-- "shot": integer, sequential starting at 1
-- "type": shot type, in capitals (e.g. "WIDE ESTABLISHING SHOT", "CLOSE UP")
-- "caption": 2-3 short lines in present tense, natural sentence case, the way a storyboard scene description reads. Join lines with \\n.
-- "characters": array of character names visible in this shot (empty array if none)
-- "setting": brief description of location/environment
-- "setup": a short lowercase id for the physical location/configuration (e.g. "lab_floor", "carter_office"). EVERY shot in the same physical space shares the same setup id.
-- "is_staging": boolean. For EACH distinct setup, include exactly ONE shot with "is_staging": true - a WIDE ESTABLISHING shot showing the whole space and ALL characters in that setup, in clear left-to-right positions, plus key props. Make it the FIRST shot of that setup. All others are false.
-- "action": one sentence describing what is happening
-- "mood": lighting/atmosphere description
-- "image_prompt": 2-3 sentences describing ONLY composition, blocking, poses, camera angle, and spatial relationships - a rough blocking sketch, not finished art. State each visible figure's EXPLICIT position (far-left/center/far-right, foreground/mid/background), consistent with that setup's staging shot. Whenever a character moves or is oriented toward/away from someone, state the direction EXPLICITLY relative to the others AND the camera (never the bare word "forward"). Make every gaze/approach/reach unambiguous about who/what it targets. Do not describe drawing style/colour/rendering - a fixed house-style sentence is appended automatically.
+Return ONLY a JSON array (no markdown fences, no commentary). Each element has these EXACT keys:
+- "shot": integer, sequential from 1.
+- "type": shot SIZE in capitals (e.g. "WIDE ESTABLISHING SHOT", "FULL SHOT", "MEDIUM SHOT", "MEDIUM CLOSE-UP", "CLOSE UP", "EXTREME CLOSE-UP", "INSERT", "OVER-THE-SHOULDER", "TWO-SHOT", "POV").
+- "caption": 2-3 short present-tense lines, the way a storyboard description reads. Join lines with \\n.
+- "characters": array of character NAMES visible in this shot (empty array if none).
+- "figures": for EACH visible character, an object {"name","gender","pos"} where gender is exactly "man", "woman", or "person" (decide ONCE per character from the script and keep it IDENTICAL in every shot) and pos is a short position token: "far-left"|"left"|"centre"|"right"|"far-right", optionally with depth e.g. "left foreground" / "centre background". Empty array if no figures.
+- "setting": brief location/environment.
+- "setup": short lowercase id for the physical location/configuration (e.g. "startup_office"). EVERY shot in the same space shares the same setup id.
+- "is_staging": boolean. For EACH distinct setup include exactly ONE wide establishing staging shot (is_staging:true) showing the whole space and ALL its characters in clear left-to-right positions plus key props; make it the FIRST shot of that setup. All others false.
+- "mood": ONE sentence written as a LIGHTING ANCHOR - light DIRECTION + QUALITY (hard/soft, warm/cool) + PRACTICAL SOURCE (window/lamp/sun). Use the SAME lighting-anchor sentence for every shot sharing a setup (the staging shot defines it).
+- "action": one sentence on what happens.
+- "image_prompt": the cinematic composition in 2-4 sentences, following these RULES exactly:
+   * Describe each visible figure by GENDER + POSITION + FACING - NEVER by name (the renderer cannot resolve names; names are only ever used for the drawn labels). E.g. "the woman stands far-left facing right toward the man; the man sits centre-right, angled left toward her."
+   * 180-DEGREE RULE: if a figure is left of another they face right toward them, and vice-versa; keep facings consistent with the staging shot.
+   * DEPTH: explicitly name what is in the FOREGROUND, MIDGROUND and BACKGROUND. Distant elements are hazier/lighter (atmospheric depth). When figures sit at different depths, state relative size (closer = larger in frame).
+   * Give each figure a brief expression/posture.
+   * Include a CAMERA ANGLE only if NOT eye-level (low angle, high angle, etc.).
+   * Do NOT mention drawing style, medium, colour, line/shading, OR any camera lens - those are added automatically. Do NOT write character names or labels here.
 
 Image-generation safety: depict romance/intimacy/violence tastefully and non-explicitly (poses, framing, spatial relationships - not literal kissing/embracing/gore).`;
 
@@ -46,8 +53,9 @@ Insert extra shots between existing ones where they strengthen the visual langua
 HARD RULES:
 - KEEP every original shot (light caption polish only).
 - Do NOT add new staging shots. Keep exactly the staging shots already marked "is_staging": true. Every added shot has "is_staging": false and reuses an EXISTING "setup" id from its neighbours.
-- Use the EXACT same JSON keys as the existing shots ("shot","type","caption","characters","setting","setup","is_staging","action","mood","image_prompt").
-- Write each added shot's "image_prompt" in the same style and END it with this EXACT sentence: "${STYLE_CLAUSE}"
+- Use the EXACT same JSON keys as the existing shots ("shot","type","caption","characters","figures","setting","setup","is_staging","action","mood","image_prompt").
+- For each added shot, set "figures" ({name,gender,pos}) with gender IDENTICAL to how that character appears elsewhere, and copy the neighbours' setup "mood" (lighting anchor) verbatim.
+- Write each added shot's "image_prompt" by the SAME rules: describe figures by GENDER + POSITION + FACING (never by name), explicit FOREGROUND/MIDGROUND/BACKGROUND depth, camera angle only if not eye-level, and NO drawing-style/colour/lens/label text.
 - Renumber "shot" sequentially from 1 in final viewing order.
 
 Return ONLY the full enriched JSON array.`;
@@ -56,16 +64,11 @@ export const SCENE_PROMPT = `Read the script and return ONLY a JSON object {"sce
 
 const PALETTE = ["red", "blue", "green", "orange", "purple", "teal", "magenta", "brown", "olive", "navy"];
 
+// Assigns a stable colour to each character name. The label instruction itself is built at
+// generation time from each shot's `figures` (so labels are tied to the right figure by position).
 export function applyCharacterStyling(shots) {
   const colorMap = {};
   for (const s of shots) for (const c of (s.characters || [])) if (!(c in colorMap)) colorMap[c] = PALETTE[Object.keys(colorMap).length % PALETTE.length];
-  for (const s of shots) {
-    const chars = s.characters || [];
-    if (!chars.length) continue;
-    const assignments = chars.map(c => `"${String(c).toUpperCase()}" in ${colorMap[c]}`).join(", ");
-    s.image_prompt = (s.image_prompt || "") +
-      ` Character name-label colors for this panel: ${assignments} - write each character's FULL NAME as a small text label next to their figure in the assigned color, while every line of the drawing itself stays plain black on white.`;
-  }
   return { shots, styles: colorMap };
 }
 
@@ -277,10 +280,43 @@ export function coreBlocking(imagePrompt) {
   t = t.split(STYLE_CLAUSE).join(" ");                            // drop any inlined house-style clause
   return t.replace(/\s+/g, " ").trim();
 }
-export function labelInstruction(characters, styles) {
-  const chars = (characters || []).filter(Boolean);
-  if (!chars.length) return "";
+// Builds the label instruction tied to the right FIGURE (by gender + position), so a NAME is only
+// ever used as drawn label text — never as the figure's identity. Reconciles with `characters`
+// (which the user can edit in review): drops labels for removed characters, adds any extras.
+export function labelInstruction(figures, characters, styles) {
   const map = styles || {};
-  const parts = chars.map(c => `'${String(c).toUpperCase()}' in ${map[c] || "a distinct colour"}`);
-  return ` Write each visible character's FULL NAME as a small text label beside their figure: ${parts.join(", ")}. Those labels are the ONLY colour; every other line is black on white.`;
+  const names = (characters || []).filter(Boolean).map(String);
+  const figs = (Array.isArray(figures) ? figures : []).filter(f => f && f.name && (!names.length || names.includes(String(f.name))));
+  const parts = figs.map(f => {
+    const who = [f.gender, f.pos && ("on the " + String(f.pos))].filter(Boolean).join(" ") || "figure";
+    return `label the ${who} '${String(f.name).toUpperCase()}' in ${map[f.name] || "a distinct colour"}`;
+  });
+  const covered = new Set(figs.map(f => String(f.name)));
+  for (const c of names) if (!covered.has(c)) parts.push(`label '${c.toUpperCase()}' in ${map[c] || "a distinct colour"}`);
+  if (!parts.length) return "";
+  return ` Name labels are the ONLY colour in the frame (every other line follows the style reference): ${parts.join("; ")}.`;
+}
+
+// Maps a shot SIZE to a real lens + aperture (the "telephoto hack" — without this gpt-image defaults
+// to a ~35mm wide look that distorts faces and over-sharpens backgrounds).
+export function lensFor(type) {
+  const t = String(type || "").toUpperCase();
+  if (/EXTREME CLOSE|\bECU\b/.test(t)) return "Shot on a 100mm lens, f/1.8, ultra-shallow depth of field, only the subject sharp";
+  if (/MEDIUM CLOSE|\bMCU\b/.test(t)) return "Shot on an 85mm portrait lens, f/2.8, shallow depth of field, background softly blurred";
+  if (/CLOSE|\bCU\b|REACTION/.test(t)) return "Shot on an 85mm portrait lens, f/2.8, shallow depth of field, background softly blurred";
+  if (/INSERT|DETAIL|CUTAWAY/.test(t)) return "Shot on a 100mm macro lens, f/4, close focus on the detail, background soft";
+  if (/ESTABLISH|EXTREME WIDE|\bEWS\b/.test(t)) return "Shot on a 24mm wide-angle lens, deep focus, f/8, everything sharp";
+  if (/OVER-THE-SHOULDER|OVER THE SHOULDER|\bOTS\b/.test(t)) return "Shot on an 85mm lens, f/2.8, foreground shoulder soft, subject sharp";
+  if (/MEDIUM|TWO-SHOT|TWO SHOT|\bMS\b/.test(t)) return "Shot on a 50mm lens, f/2.8, shallow depth of field";
+  if (/WIDE|FULL|TRACKING|DYNAMIC|\bPOV\b|\bWS\b|\bFS\b/.test(t)) return "Shot on a 35mm lens, f/5.6, moderate depth of field";
+  return "Shot on a 50mm lens, f/2.8";
+}
+
+// One lighting anchor per setup (the setup's staging shot's mood), reused verbatim for continuity.
+export function lightingAnchorFor(shots, shot) {
+  if (shot && shot.setup) {
+    const st = (shots || []).find(s => s.is_staging && s.setup === shot.setup);
+    if (st && st.mood) return st.mood;
+  }
+  return (shot && shot.mood) || "";
 }

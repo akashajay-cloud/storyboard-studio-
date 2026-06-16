@@ -5,7 +5,7 @@
 // shots), passed to gpt-image-2's edits endpoint AND to QA. The prompt then carries only the delta.
 import {
   authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel,
-  readStyleImg, coreBlocking, labelInstruction, styleClauseFor,
+  readStyleImg, coreBlocking, labelInstruction, styleClauseFor, lensFor, lightingAnchorFor,
 } from "./_lib.mjs";
 
 export default async (req) => {
@@ -46,21 +46,29 @@ export default async (req) => {
       }
     }
 
-    // ---- slim, reference-aware prompt: refs carry style + location, prompt carries the delta ----
-    const preamble = (styleB64 && stagingB64)
-      ? "You are given two reference images. Reference 1 is the STYLE reference: match its drawing medium and linework exactly, but IGNORE its subject and composition. Reference 2 is the STAGING reference: keep the SAME location, props and the characters' established left-to-right positions. Now draw this shot. "
+    // ---- assemble in cinematographer order: references -> shot size -> blocking (angle / figures by
+    // ---- gender+position+facing / expression / FG-MG-BG depth) -> lighting anchor -> lens -> style
+    // ---- -> name labels -> inline "no". Figures are described by gender+position; NAMES only label.
+    const refLine = (styleB64 && stagingB64)
+      ? "Two reference images. Reference 1 = STYLE: match its drawing medium, linework and finish EXACTLY, but ignore its subject and composition. Reference 2 = STAGING: keep the SAME location, props and the figures' established left-to-right positions. "
       : styleB64
-      ? "The reference image is the STYLE reference: match its drawing medium and linework exactly, but IGNORE its subject. Now draw this shot. "
+      ? "Reference image = STYLE: match its drawing medium, linework and finish EXACTLY, but ignore its subject. "
       : "";
-    // Explicit words for the SELECTED style (e.g. grayscale = soft shading) so the model renders the
-    // chosen look instead of drifting to its default — the style reference image alone isn't enough.
-    const styleText = styleClauseFor(project.styleChoice);
+    const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
+    const anchor = lightingAnchorFor(shots, shot);                 // one lighting anchor per setup
+    const styleText = styleClauseFor(project.styleChoice);         // explicit words for the SELECTED style
     const styleDirective = styleText
-      ? " STYLE — match this EXACTLY and add no rendering it does not call for: " + styleText
-      : (styleB64 ? " STYLE — match the drawing medium, linework and finish of the style reference image exactly." : "");
+      ? " Style: " + styleText
+      : (styleB64 ? " Match the style reference's medium and finish exactly." : "");
+    const labels = labelInstruction(shot.figures, shot.characters, project.styles);
+    const tail = " No text or captions other than the character name labels; no panel borders, frames or UI.";
+
     let prompt = promptOverride
-      ? preamble + promptOverride + styleDirective
-      : preamble + `${shot.type}. ` + (coreBlocking(shot.image_prompt) || shot.action || shot.caption || "") + labelInstruction(shot.characters, project.styles) + styleDirective;
+      ? refLine + promptOverride + styleDirective + labels + tail
+      : refLine + `${shot.type}. ` + blocking
+        + (anchor ? " Lighting: " + anchor : "")
+        + " " + lensFor(shot.type) + "."
+        + styleDirective + labels + tail;
     if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;
 
     let b64 = await generateImageB64(prompt, refs);
