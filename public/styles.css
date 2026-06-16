@@ -211,6 +211,14 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
 .pcard .pbody { padding: 13px 15px; }
 .pcard .pname { font-family: var(--display); font-weight: 600; font-size: 16px; margin: 0 0 3px; }
 .pcard .pmeta { color: var(--muted-foreground); font-size: 12.5px; }
+.kebab-wrap { position: absolute; top: 10px; right: 10px; }
+.kebab { background: transparent; border: 0; color: var(--muted-foreground); cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 8px; }
+.kebab:hover { color: var(--foreground); background: var(--secondary); }
+.pmenu { position: absolute; top: 30px; right: 0; z-index: 10; min-width: 130px; background: var(--popover); border: 1px solid var(--border); border-radius: var(--radius); padding: 5px; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.pmenu button { background: transparent; border: 0; color: var(--foreground); font: inherit; font-size: 13.5px; text-align: left; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.pmenu button:hover { background: var(--secondary); }
+.pmenu .pm-delete { color: var(--destructive); }
+.pmenu .pm-delete:hover { background: oklch(0.62 0.2 25 / 0.12); }
 .pcard.new { display: grid; place-items: center; min-height: 200px; border-style: dashed; color: var(--muted-foreground); }
 .pcard.new:hover { color: var(--primary); border-color: oklch(0.78 0.14 70 / 0.6); }
 .pcard.new .plus { font-size: 30px; font-weight: 300; }
@@ -405,5 +413,20 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
 .seditor label { font-size: 12px; color: var(--muted-foreground); }
 .seditor textarea { background: var(--popover); border: 1px solid var(--border); color: var(--foreground); border-radius: var(--radius); padding: 9px 11px; font: inherit; font-size: 13px; line-height: 1.5; resize: vertical; }
 .seditor textarea:focus { outline: none; border-color: var(--primary); }
+
+/* loading shimmer for panels being generated (staging + drawing) */
+.gimg.empty.loading, .simg.empty.loading {
+  background-image: linear-gradient(100deg, oklch(0.215 0.007 60) 28%, oklch(0.30 0.013 60) 50%, oklch(0.215 0.007 60) 72%) !important;
+  background-size: 220% 100%; animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
+
+/* shotlist: move up/down + insert-below controls */
+.movebtns { display: inline-flex; flex-direction: column; gap: 3px; }
+.mv { width: 24px; height: 16px; line-height: 1; padding: 0; background: var(--secondary); border: 1px solid var(--border); color: var(--muted-foreground); border-radius: 5px; cursor: pointer; font-size: 11px; }
+.mv:hover { color: var(--foreground); background: var(--accent-soft); }
+.sc-top .ins { margin-left: auto; background: var(--secondary); border: 1px solid var(--border); color: var(--muted-foreground); font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 8px; cursor: pointer; }
+.sc-top .ins:hover { color: var(--primary); border-color: oklch(0.78 0.14 70 / 0.5); }
+.sc-top .del { margin-left: 8px; }
 
 @media (max-width: 720px) { .stepper { display: none; } .herocol h1 { font-size: 36px; } main { padding: 28px 18px 60px; } .head-actions { flex-wrap: wrap; } .review-title { font-size: 26px; } .features { grid-template-columns: 1fr; } }

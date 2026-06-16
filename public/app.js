@@ -102,7 +102,13 @@ function renderProjects() {
     const pct = total ? Math.round(done / total * 100) : 0;
     const showBar = p.status !== "error";
     return `<div class="pcard" data-id="${p.id}">
-      <button class="kebab" data-id="${p.id}">⋮</button>
+      <div class="kebab-wrap">
+        <button class="kebab" title="Options">⋮</button>
+        <div class="pmenu hidden">
+          <button class="pm-rename">Rename</button>
+          <button class="pm-delete">Delete</button>
+        </div>
+      </div>
       <p class="pname">${esc(p.name)}</p>
       ${p.location ? `<p class="ploc">${esc(p.location)}</p>` : ""}
       <p class="pstatus-line ${m.cls}">${m.icon} ${m.label}</p>
@@ -113,9 +119,35 @@ function renderProjects() {
   }).join("");
   $("#projectGrid").innerHTML = `<div class="pcard new" id="newCard"><div class="plus">＋</div><div>New project</div></div>` + cards;
   $("#newCard").addEventListener("click", newProject);
-  $$("#projectGrid .pcard[data-id]").forEach(c => c.addEventListener("click", () => openProject(c.dataset.id)));
-  $$("#projectGrid .kebab").forEach(k => k.addEventListener("click", e => e.stopPropagation()));
+  $$("#projectGrid .pcard[data-id]").forEach(card => {
+    const id = card.dataset.id;
+    card.addEventListener("click", () => openProject(id));
+    const menu = card.querySelector(".pmenu");
+    card.querySelector(".kebab").addEventListener("click", e => {
+      e.stopPropagation();
+      $$("#projectGrid .pmenu").forEach(m => { if (m !== menu) m.classList.add("hidden"); });
+      menu.classList.toggle("hidden");
+    });
+    card.querySelector(".pm-rename").addEventListener("click", e => {
+      e.stopPropagation(); menu.classList.add("hidden");
+      const p = state.projects.find(x => x.id === id); if (!p) return;
+      const name = prompt("Rename project", p.name);
+      if (name && name.trim()) { p.name = name.trim(); saveProjects(); renderProjects(); }
+    });
+    card.querySelector(".pm-delete").addEventListener("click", e => {
+      e.stopPropagation(); menu.classList.add("hidden");
+      const p = state.projects.find(x => x.id === id); if (!p) return;
+      if (confirm(`Delete “${p.name}”? This can't be undone.`)) {
+        state.projects = state.projects.filter(x => x.id !== id);
+        saveProjects(); renderProjects();
+      }
+    });
+  });
 }
+// close any open card menu when clicking elsewhere
+document.addEventListener("click", e => {
+  if (!e.target.closest(".kebab-wrap")) $$("#projectGrid .pmenu").forEach(m => m.classList.add("hidden"));
+});
 function newProject() { state.current = null; state.file = null; resetUpload(); go("upload"); }
 function openProject(id) {
   const p = state.projects.find(x => x.id === id); if (!p) return;
@@ -243,9 +275,10 @@ function renderShots() {
   $("#shotGrid").innerHTML = state.shots.map((s, i) => `
     <div class="shotcard2" data-i="${i}">
       <div class="sc-top">
-        <span class="drag" title="drag to reorder">⠿</span>
+        <span class="movebtns"><button class="mv up" title="Move up">↑</button><button class="mv down" title="Move down">↓</button></span>
         <span class="num">${String(s.shot).padStart(2, "0")}</span>
         <div class="sc-type"><label>Shot type</label><input class="type-input" data-f="type" value="${esc(s.type)}"></div>
+        <button class="ins" title="Insert a shot below">＋ Insert below</button>
         <button class="del" title="Delete shot">${TRASH}</button>
       </div>
       <div class="sc-grid">
@@ -289,11 +322,26 @@ grid.addEventListener("input", e => {
   const i = +e.target.closest(".shotcard2").dataset.i;
   state.shots[i][f] = e.target.value; markDirty();
 });
+const blankShot = (setup) => ({ shot: 0, type: "MEDIUM SHOT", caption: "", action: "",
+  setting: "", mood: "", characters: [], image_prompt: "", setup: setup || "scene", is_staging: false });
+const renumber = () => state.shots.forEach((s, k) => { s.shot = k + 1; });
+
 grid.addEventListener("click", e => {
+  const card = e.target.closest(".shotcard2"); if (!card) return;
+  const i = +card.dataset.i;
   if (e.target.closest(".del")) {
-    const i = +e.target.closest(".shotcard2").dataset.i;
-    state.shots.splice(i, 1); state.shots.forEach((s, k) => s.shot = k + 1);
-    renderShots(); markDirty(); return;
+    state.shots.splice(i, 1); renumber(); renderShots(); markDirty(); return;
+  }
+  if (e.target.closest(".mv.up")) {
+    if (i > 0) { [state.shots[i - 1], state.shots[i]] = [state.shots[i], state.shots[i - 1]]; renumber(); renderShots(); markDirty(); }
+    return;
+  }
+  if (e.target.closest(".mv.down")) {
+    if (i < state.shots.length - 1) { [state.shots[i + 1], state.shots[i]] = [state.shots[i], state.shots[i + 1]]; renumber(); renderShots(); markDirty(); }
+    return;
+  }
+  if (e.target.closest(".ins")) {
+    state.shots.splice(i + 1, 0, blankShot(state.shots[i]?.setup)); renumber(); renderShots(); markDirty(); return;
   }
   const x = e.target.closest(".mini-chip .x");
   if (x) {
@@ -350,22 +398,25 @@ function spanelHTML(s) {
 }
 function setStagingImg(shot, img) {
   const p = sp(shot); if (!p) return;
-  const im = p.querySelector(".simg"); im.classList.remove("empty"); im.dataset.state = ""; im.style.backgroundImage = `url('${img}')`;
+  stopCountdown("s" + shot);
+  const im = p.querySelector(".simg"); im.classList.remove("empty", "loading"); im.dataset.state = ""; im.style.backgroundImage = `url('${img}')`;
 }
-function setStagingState(shot, st) {
+function startStagingLoad(shot, label) {
   const p = sp(shot); if (!p) return;
-  const im = p.querySelector(".simg"); im.classList.add("empty"); im.style.backgroundImage = ""; im.dataset.state = st;
+  const im = p.querySelector(".simg"); im.classList.add("empty"); im.style.backgroundImage = "";
+  startCountdown("s" + shot, im, DEMO ? 4 : 75, label);   // shimmer + estimated-time countdown
 }
 function regenStaging(shot) {
   const s = state.shots.find(x => x.shot === shot);
-  setStagingState(shot, "redrawing…");
-  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setStagingImg(shot, s._img); play("tick"); }, DEMO ? 800 : 0);
+  startStagingLoad(shot, "Redrawing");
+  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setStagingImg(shot, s._img); play("tick"); }, DEMO ? 1600 : 0);
 }
 async function renderStaging() {
   const staging = state.shots.filter(s => s.is_staging);
   $("#stagingBoard").innerHTML = staging.map(spanelHTML).join("");
+  for (const s of staging) if (!s._img) startStagingLoad(s.shot, "Drawing");   // shimmer + ETA per panel
   if (DEMO) {
-    await tick(600);
+    await tick(1800);
     for (const s of staging) { if (!s._img) s._img = demoImg(s.shot); setStagingImg(s.shot, s._img); }
   }
 }
@@ -447,28 +498,32 @@ async function runGeneration() {
   };
   setProg();
   const t0 = Date.now();
+  const PER_EST = DEMO ? 4 : 60;   // rough seconds/panel for the per-panel countdown
   for (const s of derived) {
-    setGenPill(s.shot, "gen", "Drawing…"); setGenState(s.shot, "drawing…"); await tick(DEMO ? 420 : 0);
-    setGenPill(s.shot, "gen", "QA ×3…"); setGenState(s.shot, "QA…"); await tick(DEMO ? 340 : 0);
+    const im = gp(s.shot)?.querySelector(".gimg");
+    setGenPill(s.shot, "gen", "Drawing…"); startCountdown("g" + s.shot, im, PER_EST, "Drawing"); await tick(DEMO ? 420 : 0);
+    setGenPill(s.shot, "gen", "QA ×3…"); startCountdown("g" + s.shot, im, DEMO ? 2 : 15, "QA"); await tick(DEMO ? 340 : 0);
     if (DEMO && s.shot === 5 && !s._tried) {                       // demo: one panel trips QA, shows reason, redraws
-      s._tried = true;
+      s._tried = true; stopCountdown("g" + s.shot, im);
       setGenFlagged(s.shot, "STYLE: figure shaded like finished art instead of a rough sketch.");
       flagged++; setProg(); play("error"); await tick(1100);
-      setGenPill(s.shot, "gen", "Redrawing…"); flagged--; setProg(); await tick(500);
+      setGenPill(s.shot, "gen", "Redrawing…"); startCountdown("g" + s.shot, im, PER_EST, "Drawing"); flagged--; setProg(); await tick(500);
     }
+    stopCountdown("g" + s.shot, im);
     s._img = DEMO ? demoImg(s.shot) : s._img;
     setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved");
     approved++; done++; play("tick");
     const per = (Date.now() - t0) / Math.max(1, done - stagingCount);
     const eta = Math.round(per * (totalPanels - done) / 1000);
-    $("#progressEta").textContent = done < totalPanels ? `~${eta}s left` : "Finishing up…";
+    $("#progressEta").textContent = done < totalPanels ? `~${eta}s left` : "all panels done";
     setProg();
   }
-  $("#genStateLabel").textContent = "Generation complete";
+  $("#genStateLabel").textContent = "All panels done — review them, then create your storyboard.";
+  $("#createBoardBtn").classList.remove("hidden");
   play("done");
   if (state.current) { state.current.status = "done"; state.current.panelsDone = totalPanels; state.current.panelsTotal = totalPanels; saveProjects(); }
-  await tick(700); buildBoard();
 }
+$("#createBoardBtn").addEventListener("click", () => buildBoard());
 
 function regenPanel(shot) {
   const s = state.shots.find(x => x.shot === shot);
@@ -568,6 +623,22 @@ function bindBoardZoom(sel) {
 /* ============================ utils ============================ */
 const tick = ms => new Promise(r => setTimeout(r, ms));
 const fmtClock = s => { s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+// per-panel loading shimmer + estimated-time countdown (staging + generation)
+const _counters = {};
+function startCountdown(key, imgEl, seconds, label) {
+  stopCountdown(key);
+  if (!imgEl) return;
+  imgEl.classList.add("loading");
+  let left = seconds;
+  const paint = () => { imgEl.dataset.state = `${label} · ~${Math.max(1, Math.round(left))}s`; };
+  paint();
+  _counters[key] = setInterval(() => { left = Math.max(1, left - 1); paint(); }, 1000);
+}
+function stopCountdown(key, imgEl) {
+  if (_counters[key]) { clearInterval(_counters[key]); delete _counters[key]; }
+  if (imgEl) imgEl.classList.remove("loading");
+}
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const today = () => new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
 function dl(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
