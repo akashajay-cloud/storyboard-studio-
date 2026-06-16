@@ -1,7 +1,12 @@
 // Background worker: generate ONE panel (gpt-image-2) -> QA (Claude vision) -> store in Blobs ->
 // update that shot's status on the project. Frontend dispatches one of these per shot (with a
 // concurrency limit) and polls /api/status. Communicates only via Blobs.
-import { authed, getProject, putProject, generateImageB64, qaPanel, savePanel } from "./_lib.mjs";
+// References: the project's chosen STYLE anchor (every panel) + this setup's STAGING frame (derived
+// shots), passed to gpt-image-2's edits endpoint AND to QA. The prompt then carries only the delta.
+import {
+  authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel,
+  readStyleImg, coreBlocking, labelInstruction,
+} from "./_lib.mjs";
 
 export default async (req) => {
   if (!authed(req)) return new Response("unauthorized", { status: 401 });
@@ -26,19 +31,43 @@ export default async (req) => {
   try {
     await setShot({ panelStatus: "drawing", reason: null });
 
-    let prompt = shot.image_prompt || `${shot.type}. ${shot.caption || ""}`;
+    // ---- assemble references: style anchor (all panels) + this setup's staging frame (derived) ----
+    const refs = [];
+    let styleB64 = null, stagingB64 = null;
+    if (project.styleRef) {
+      const sbuf = await readStyleImg(id, "ref");
+      if (sbuf) { const b = Buffer.from(sbuf); refs.push(b); styleB64 = b.toString("base64"); }
+    }
+    if (!shot.is_staging && shot.setup) {
+      const stagingShot = shots.find(s => s.is_staging && s.setup === shot.setup);
+      if (stagingShot) {
+        const pbuf = await readPanel(id, stagingShot.shot);
+        if (pbuf) { const b = Buffer.from(pbuf); refs.push(b); stagingB64 = b.toString("base64"); }
+      }
+    }
+
+    // ---- slim, reference-aware prompt: refs carry style + location, prompt carries the delta ----
+    const preamble = (styleB64 && stagingB64)
+      ? "You are given two reference images. Reference 1 is the STYLE reference: match its drawing medium and linework exactly, but IGNORE its subject and composition. Reference 2 is the STAGING reference: keep the SAME location, props and the characters' established left-to-right positions. Now draw this shot. "
+      : styleB64
+      ? "The reference image is the STYLE reference: match its drawing medium and linework exactly, but IGNORE its subject. Now draw this shot. "
+      : "";
+    let prompt = promptOverride
+      ? preamble + promptOverride
+      : preamble + `${shot.type}. ` + (coreBlocking(shot.image_prompt) || shot.action || shot.caption || "") + labelInstruction(shot.characters, project.styles);
     if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;
-    let b64 = await generateImageB64(prompt);
+
+    let b64 = await generateImageB64(prompt, refs);
 
     let status = "approved", reason = null;
     if (qa) {
       try {
         await setShot({ panelStatus: "qa" });
-        const r = await qaPanel(b64, shot);
+        const r = await qaPanel(b64, shot, { styleB64, stagingB64 });
         if (!r.pass) {
-          // one corrective regeneration using the QA fix
-          if (r.fix) { try { b64 = await generateImageB64(prompt + " CORRECTION: " + r.fix); } catch (_) {} }
-          const r2 = await qaPanel(b64, shot).catch(() => ({ pass: true }));
+          // one corrective regeneration using the QA fix (keep the same references)
+          if (r.fix) { try { b64 = await generateImageB64(prompt + " CORRECTION: " + r.fix, refs); } catch (_) {} }
+          const r2 = await qaPanel(b64, shot, { styleB64, stagingB64 }).catch(() => ({ pass: true }));
           if (!r2.pass) { status = "flagged"; reason = (r2.issues || r.issues || []).join("; ") || "QA flagged"; }
         }
       } catch (_) { /* QA inconclusive -> keep the image, mark approved */ }

@@ -127,6 +127,29 @@ export const json = (obj, status = 200) =>
 // ===================== image generation (OpenAI gpt-image-2) =====================
 export const IMAGE_MODEL = "gpt-image-2";
 export const IMAGE_SIZE = "1024x1536"; // 9:16 portrait
+export const IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits";
+
+// ---- per-project style anchor: 3 candidate swatches the user picks from (or replaces by upload) ----
+// Rendered text-only (these bootstrap the look); the chosen one becomes the STYLE reference fed into
+// every panel. Subject is deliberately neutral so its CONTENT never bleeds into real scenes.
+const STYLE_SUBJECT =
+  "A neutral style swatch for a storyboard: two simple blocking figures (one reading male, one " +
+  "female by body proportion only) standing a little apart on plain white, each with a short " +
+  "example full-name label - 'ALEX' in red beside one figure, 'SAM' in blue beside the other. No " +
+  "background, no props - this image is ONLY a sample of the drawing STYLE.";
+export const STYLE_CANDIDATES = [
+  { id: "sketch", name: "Rough storyboard sketch",
+    clause: "Draw it as a loose, rough black-and-white pre-production storyboard sketch: quick gestural " +
+      "pencil construction lines, faceless figures with plain oval heads, NO shading, NO rendering - a fast thumbnail." },
+  { id: "ink", name: "Clean comic line-art",
+    clause: "Draw it as clean black ink line-art: confident even contour lines, flat, NO shading or hatching, " +
+      "faceless figures with simple oval heads, crisp comic-panel clarity on white." },
+  { id: "grayscale", name: "Cinematic grayscale concept",
+    clause: "Draw it as a moody cinematic grayscale concept sketch: soft graphite shading and tonal depth, " +
+      "gentle directional lighting, figures still loosely blocked with no detailed faces, atmospheric but monochrome." },
+];
+export const styleCandidatePrompt = (c) =>
+  `${STYLE_SUBJECT} ${c.clause} The ONLY colour anywhere is the two name labels; every drawn line is otherwise black on white.`;
 
 // Appended on a content-moderation block (clothes the faceless figures so they don't read as nude).
 export const SOFTEN_CLAUSE =
@@ -137,13 +160,32 @@ export const SOFTEN_CLAUSE =
 const isModeration = (s) => /moderation_blocked|safety|content_policy|rejected/i.test(String(s));
 
 // Returns base64 PNG. Auto-softens + retries once on a moderation block.
-export async function generateImageB64(prompt) {
+// `refs` = array of PNG byte buffers (style anchor, staging frame). With refs we hit the
+// /v1/images/edits endpoint (multipart) so the model anchors to them; without, the plain
+// text-to-image endpoint. The reference roles are explained in the prompt by the caller.
+export async function generateImageB64(prompt, refs = []) {
+  const hasRefs = Array.isArray(refs) && refs.length > 0;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: IMAGE_SIZE, n: 1 }),
-    });
+    let res;
+    if (hasRefs) {
+      const fd = new FormData();
+      fd.append("model", IMAGE_MODEL);
+      fd.append("prompt", prompt);
+      fd.append("size", IMAGE_SIZE);
+      fd.append("n", "1");
+      refs.forEach((buf, i) => fd.append("image[]", new Blob([buf], { type: "image/png" }), `ref${i}.png`));
+      res = await fetch(IMAGE_EDIT_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, // let fetch set the multipart boundary
+        body: fd,
+      });
+    } else {
+      res = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: IMAGE_SIZE, n: 1 }),
+      });
+    }
     if (res.ok) {
       const data = await res.json();
       const b64 = data?.data?.[0]?.b64_json;
@@ -158,28 +200,33 @@ export async function generateImageB64(prompt) {
 }
 
 // ===================== QA (Claude vision) =====================
-export const QA_PROMPT = `You are a storyboard QA reviewer. You are shown a generated panel image and its shot card.
-Grade ONLY substance + house style. Return ONLY a JSON object: {"pass": boolean, "issues": [string], "fix": string}.
+// The panel is graded against the shot card and, when present, a STYLE reference and a STAGING
+// reference (the action/caption are the source of truth for intent, not the prompt).
+export const QA_PROMPT = `You are a storyboard QA reviewer. You are shown a generated panel image and its shot card, and SOMETIMES a STYLE reference image and/or a STAGING reference image (the wide frame of this location). Return ONLY a JSON object: {"pass": boolean, "issues": [string], "fix": string}.
 Checks (any failure => pass=false):
 1. CHARACTERS: every character in the card is present; correct FULL-NAME labels in their assigned colours.
 2. POSITIONS & FACING: left/right/depth and who-faces/approaches-whom match the action/caption intent (a figure walking toward the camera when they should engage others in-frame is a FAIL).
 3. ACTION & FRAMING: the pose/action and shot type (close-up vs wide etc.) match the card.
-4. STYLE: rough black-and-white gestural blocking sketch — faceless figures, no shading/rendering, the only colour is the name labels. Finished/rendered/shaded art is a STYLE FAIL.
+4. STYLE: if a STYLE reference is provided, the panel must match ITS drawing medium and level of finish (linework, shading/none); if not, judge it as a rough black-and-white blocking sketch. The only colour should be the name labels.
+5. CONTINUITY (apply ONLY when a STAGING reference is provided): the panel must share the SAME location and key props, and keep the characters' left-to-right order consistent with the staging frame (someone left of another in staging must not appear right of them here unless it is a deliberate reverse angle). Skip this check entirely if no staging reference is given.
 "issues": short specific problems naming the check (empty if pass). "fix": one concrete correction to append to the prompt on regeneration (empty if pass).`;
 
 function extractText(r) { return (r.content || []).map(b => b.text || "").join("").trim(); }
 
-export async function qaPanel(imageB64, shot) {
+// refs = { styleB64, stagingB64 } — either/both optional.
+export async function qaPanel(imageB64, shot, refs = {}) {
+  const content = [{ type: "image", source: { type: "base64", media_type: "image/png", data: imageB64 } }];
+  if (refs.styleB64) content.push(
+    { type: "text", text: "STYLE reference (match this drawing style/medium only, ignore its subject):" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: refs.styleB64 } });
+  if (refs.stagingB64) content.push(
+    { type: "text", text: "STAGING reference (same location, props and character left-to-right order):" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: refs.stagingB64 } });
+  content.push({ type: "text", text: "Shot card:\n" + JSON.stringify({ shot: shot.shot, type: shot.type, caption: shot.caption, action: shot.action, characters: shot.characters }) + "\n\nReturn ONLY the JSON object." });
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
     headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL, max_tokens: 1024, system: QA_PROMPT,
-      messages: [{ role: "user", content: [
-        { type: "image", source: { type: "base64", media_type: "image/png", data: imageB64 } },
-        { type: "text", text: "Shot card:\n" + JSON.stringify({ shot: shot.shot, type: shot.type, caption: shot.caption, action: shot.action, characters: shot.characters, image_prompt: shot.image_prompt }) + "\n\nReturn ONLY the JSON object." },
-      ] }],
-    }),
+    body: JSON.stringify({ model: MODEL, max_tokens: 1024, system: QA_PROMPT, messages: [{ role: "user", content }] }),
   });
   if (!res.ok) throw new Error(`qa ${res.status}: ${(await res.text()).slice(0, 200)}`);
   let t = extractText(await res.json()).replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -195,4 +242,31 @@ export async function savePanel(id, shot, b64) {
 }
 export async function readPanel(id, shot) {
   return panelStore().get(panelKey(id, shot), { type: "arrayBuffer" });
+}
+
+// ===================== style image storage (Netlify Blobs) =====================
+// which: "cand_sketch" | "cand_ink" | "cand_grayscale" (the 3 candidates) or "ref" (the chosen one).
+export const styleStore = () => getStore("styles");
+export async function saveStyleImg(id, which, b64) {
+  await styleStore().set(`${id}/${which}`, Buffer.from(b64, "base64"), { metadata: { contentType: "image/png" } });
+}
+export async function readStyleImg(id, which) {
+  return styleStore().get(`${id}/${which}`, { type: "arrayBuffer" });
+}
+
+// ===================== slim, reference-aware prompt helpers =====================
+// With a style ref + staging ref carrying the look and the location, the per-shot prompt should
+// only state the delta. These strip the auto-appended style/label text and rebuild the labels.
+export function coreBlocking(imagePrompt) {
+  let t = String(imagePrompt || "");
+  t = t.split("Character name-label colors for this panel:")[0]; // drop applyCharacterStyling's appended sentence
+  t = t.split(STYLE_CLAUSE).join(" ");                            // drop any inlined house-style clause
+  return t.replace(/\s+/g, " ").trim();
+}
+export function labelInstruction(characters, styles) {
+  const chars = (characters || []).filter(Boolean);
+  if (!chars.length) return "";
+  const map = styles || {};
+  const parts = chars.map(c => `'${String(c).toUpperCase()}' in ${map[c] || "a distinct colour"}`);
+  return ` Write each visible character's FULL NAME as a small text label beside their figure: ${parts.join(", ")}. Those labels are the ONLY colour; every other line is black on white.`;
 }

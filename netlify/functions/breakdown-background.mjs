@@ -40,12 +40,12 @@ export default async (req) => {
       scene = info.scene || scene; label = info.label || "";
     } catch (_) {}
 
-    const { shots: styled } = applyCharacterStyling(shots);
+    const { shots: styled, styles } = applyCharacterStyling(shots);
     styled.forEach((s, i) => { s.shot = i + 1; });
 
     await putProject(id, {
       ...project, status: "shots_ready", stage: "done", statusMessage: null,
-      shots: styled, scene, location: label,
+      shots: styled, styles, scene, location: label,   // keep the char->colour map for slim prompts
       panelsTotal: styled.length, panelsDone: 0,
       scriptText: undefined, // drop the bulky text now that we're done
     });

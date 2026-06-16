@@ -2,7 +2,7 @@
 // screen is fully clickable; on Netlify it calls /api/* instead.
 
 const DEMO = location.protocol === "file:" || location.hostname === "localhost";
-const STEPS = ["upload", "analyzing", "review", "staging", "generate", "board"];
+const STEPS = ["upload", "analyzing", "review", "style", "staging", "generate", "board"];
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -375,7 +375,108 @@ $("#addShotBtn").addEventListener("click", () => {
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 });
 $("#saveShots").addEventListener("click", saveNow);
-$("#toStaging").addEventListener("click", async () => { saveNow(); go("staging"); await renderStaging(); });
+$("#toStaging").addEventListener("click", async () => { saveNow(); go("style"); await renderStyle(); });
+
+/* ============================ style picker (3 candidates / upload-your-own) ============================ */
+// The chosen style image becomes THE style reference for this project, fed into every panel.
+const STYLE_OPTS = [
+  { id: "sketch",    name: "Rough storyboard sketch",   desc: "Loose gestural pencil blocking — a fast, unfinished thumbnail." },
+  { id: "ink",       name: "Clean comic line-art",      desc: "Confident flat black ink linework — crisp and clear." },
+  { id: "grayscale", name: "Cinematic grayscale concept", desc: "Moody graphite tone with soft shading and depth." },
+];
+const styleImgURL = which => `/api/style-image?id=${encodeURIComponent(state.current.id)}&which=${which}&t=${Date.now()}`;
+function styleCardHTML(o) {
+  return `<div class="stylecard" data-style="${o.id}">
+    <div class="stimg empty" data-state="Queued"></div>
+    <div class="stmeta"><b>${esc(o.name)}</b><span>${esc(o.desc)}</span></div>
+    <button class="stpick">Select</button>
+  </div>`;
+}
+function styleUploadHTML() {
+  return `<div class="stylecard upload" data-style="upload">
+    <label class="stimg empty up"><span>⬆<br>Upload your own<br><small>PNG or JPG style frame</small></span>
+      <input type="file" accept="image/*" hidden id="styleUpload"></label>
+    <div class="stmeta"><b>Your own reference</b><span>Use a style frame you already have.</span></div>
+  </div>`;
+}
+function fillStyleCard(which, url) {
+  const el = $(`.stylecard[data-style="${which}"] .stimg`); if (!el || el.dataset.loaded === "1") return;
+  stopCountdown("st_" + which, el);
+  el.classList.remove("empty", "loading", "up"); el.innerHTML = ""; el.dataset.state = ""; el.dataset.loaded = "1";
+  el.style.backgroundImage = `url('${url}')`;
+  play("tick");
+}
+async function renderStyle() {
+  state.styleChoice = null; state._styleFile = null;
+  $("#useStyleBtn").disabled = true;
+  const board = $("#styleBoard");
+  board.innerHTML = STYLE_OPTS.map(styleCardHTML).join("") + styleUploadHTML();
+
+  if (DEMO) {
+    for (let i = 0; i < STYLE_OPTS.length; i++) {
+      const el = $(`.stylecard[data-style="${STYLE_OPTS[i].id}"] .stimg`);
+      startCountdown("st_" + STYLE_OPTS[i].id, el, 3, "Drawing");
+      await tick(700);
+      fillStyleCard(STYLE_OPTS[i].id, demoImg(i + 1));
+    }
+    return;
+  }
+
+  // real: kick off candidate generation, then poll status and fill each swatch as it lands
+  STYLE_OPTS.forEach(o => startCountdown("st_" + o.id, $(`.stylecard[data-style="${o.id}"] .stimg`), 75, "Drawing"));
+  await fetch("/.netlify/functions/style-candidates-background", {
+    method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ id: state.current.id }),
+  }).catch(() => {});
+  for (let n = 0; n < 200; n++) {
+    await tick(2500);
+    let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
+    (st.styleCandidates || []).forEach(cid => fillStyleCard(cid, styleImgURL("cand_" + cid)));
+    if (st.styleStage === "ready") break;
+    if (st.styleStage === "error" && !(st.styleCandidates || []).length) { play("error"); break; }
+  }
+  STYLE_OPTS.forEach(o => stopCountdown("st_" + o.id, $(`.stylecard[data-style="${o.id}"] .stimg`)));
+}
+const styleBoard = $("#styleBoard");
+function selectStyle(card) {
+  $$("#styleBoard .stylecard").forEach(c => c.classList.remove("selected"));
+  card.classList.add("selected");
+  state.styleChoice = card.dataset.style;
+  $("#useStyleBtn").disabled = false;
+}
+styleBoard.addEventListener("click", e => {
+  const card = e.target.closest(".stylecard"); if (!card) return;
+  if (card.dataset.style === "upload") return;          // selection happens on file change
+  const img = card.querySelector(".stimg");
+  if (e.target.closest(".stpick") || e.target === img) selectStyle(card);
+});
+styleBoard.addEventListener("change", e => {
+  if (e.target.id !== "styleUpload" || !e.target.files[0]) return;
+  const card = e.target.closest(".stylecard"), f = e.target.files[0];
+  const r = new FileReader();
+  r.onload = () => {
+    const el = card.querySelector(".stimg");
+    el.classList.remove("empty", "up"); el.innerHTML = ""; el.style.backgroundImage = `url('${r.result}')`;
+    state._styleFile = f; selectStyle(card);
+  };
+  r.readAsDataURL(f);
+});
+$("#useStyleBtn").addEventListener("click", async () => {
+  if (!state.styleChoice) return;
+  if (!DEMO) {
+    if (state.styleChoice === "upload" && state._styleFile) {
+      const fd = new FormData(); fd.append("id", state.current.id); fd.append("style", state._styleFile);
+      await fetch("/api/set-style", { method: "POST", headers: apiHeaders(), body: fd }).catch(() => {});
+    } else {
+      await fetch("/api/set-style", {
+        method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
+        body: JSON.stringify({ id: state.current.id, choice: state.styleChoice }),
+      }).catch(() => {});
+    }
+  }
+  if (state.current) { state.current.styleChoice = state.styleChoice; saveProjects(); }
+  go("staging"); await renderStaging();
+});
 
 /* ============================ staging (edit / regenerate / upload) ============================ */
 const sp = shot => $(`.spanel[data-shot="${shot}"]`);
