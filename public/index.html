@@ -99,7 +99,10 @@
 
     <!-- STEP 2a — ANALYZING (split screen) -->
     <section class="screen" data-screen="analyzing">
-      <div class="screen-head"><div><h2>Building your shotlist</h2><p class="muted">Watch it work — analysis on the left, shots appear on the right.</p></div></div>
+      <div class="screen-head">
+        <div><h2>Building your shotlist</h2><p class="muted">Watch it work — analysis on the left, shots appear on the right. Please keep this tab open.</p></div>
+        <span class="badge timer" id="analyzeTimer">0:00</span>
+      </div>
       <div class="split">
         <div class="split-pane">
           <div class="analyzer">
@@ -107,11 +110,10 @@
             <div class="analyzer-doc" id="analyzerDoc"></div>
           </div>
           <ul class="analyze-steps" id="analyzeSteps">
-            <li data-k="read">Reading the script</li>
-            <li data-k="scenes">Detecting scenes &amp; locations</li>
-            <li data-k="beats">Breaking down dramatic beats</li>
+            <li data-k="reading">Reading the script</li>
+            <li data-k="breakdown">Breaking down the shots</li>
             <li data-k="editorial">Adding editorial coverage</li>
-            <li data-k="style">Applying house style &amp; labels</li>
+            <li data-k="styling">Applying house style &amp; labels</li>
           </ul>
         </div>
         <div class="split-pane">

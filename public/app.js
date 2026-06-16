@@ -172,26 +172,36 @@ $("#startBtn").addEventListener("click", async () => {
 });
 
 /* ============================ breakdown (split-screen) ============================ */
+const STAGE_ORDER = ["reading", "breakdown", "editorial", "styling"];
+
 async function runBreakdown() {
   const steps = $$("#analyzeSteps li");
   $("#analyzerDoc").innerHTML = Array.from({ length: 9 }, () => `<span style="width:${50 + Math.random() * 45}%"></span>`).join("");
   $("#liveShotlist").innerHTML = ""; $("#liveCount").textContent = "analyzing…";
 
-  // loop the analysis steps WHILE we wait (real breakdown takes 1-3 min)
-  let animating = true;
-  (async () => {
-    let i = 0;
-    while (animating) {
-      const k = i % steps.length;
-      steps.forEach((s, j) => { s.classList.toggle("active", j === k); s.classList.toggle("done", j < k); });
-      i++; await tick(DEMO ? 520 : 1400);
-    }
-  })();
+  // Each step is GREEN only once its stage actually completes (driven by real backend status).
+  const setStage = (stage) => {
+    const idx = STAGE_ORDER.indexOf(stage);
+    steps.forEach((s, j) => { s.classList.toggle("done", idx >= 0 && j < idx); s.classList.toggle("active", j === idx); });
+  };
+  const allDone = () => steps.forEach(s => { s.classList.add("done"); s.classList.remove("active"); });
+  steps.forEach(s => s.classList.remove("done", "active"));
 
-  const shots = DEMO ? (await tick(2600), demoShots()) : await apiBreakdown();
+  // elapsed timer so the wait feels alive (and people don't restart mid-run)
+  const t0 = Date.now();
+  $("#analyzeTimer").textContent = "0:00 · usually 1–2 min";
+  const timer = setInterval(() => { $("#analyzeTimer").textContent = `${fmtClock((Date.now() - t0) / 1000)} · usually 1–2 min`; }, 1000);
 
-  animating = false;
-  steps.forEach(s => { s.classList.add("done"); s.classList.remove("active"); });
+  let shots;
+  if (DEMO) {
+    for (const stg of STAGE_ORDER) { setStage(stg); await tick(750); }   // simulate stages
+    shots = demoShots();
+  } else {
+    shots = await apiBreakdown(setStage);    // real: each poll updates the stage
+  }
+
+  clearInterval(timer);
+  allDone();
   $("#liveCount").textContent = "building…";
 
   // stream the shotlist appearing
@@ -203,7 +213,7 @@ async function runBreakdown() {
         <div class="lr-body">${esc(s.caption || "")}</div></div></div>`);
     $("#liveCount").textContent = `${k + 1} shots`;
     $("#liveShotlist").scrollTop = $("#liveShotlist").scrollHeight;
-    await tick(DEMO ? 280 : 60);
+    await tick(DEMO ? 280 : 40);
   }
   await tick(400);
   return shots;
@@ -557,6 +567,7 @@ function bindBoardZoom(sel) {
 
 /* ============================ utils ============================ */
 const tick = ms => new Promise(r => setTimeout(r, ms));
+const fmtClock = s => { s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const today = () => new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
 function dl(url, name) { const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
@@ -569,7 +580,8 @@ function appPw() {
 }
 const apiHeaders = () => ({ "x-app-password": appPw() });
 
-async function apiBreakdown() {
+async function apiBreakdown(onStage) {
+  onStage && onStage("reading");
   const form = new FormData();
   if (state.file) form.append("script", state.file);
   form.append("project", state.current.name);
@@ -590,6 +602,7 @@ async function apiBreakdown() {
   for (;;) {
     await tick(2500);
     const st = await (await fetch(`/api/status?id=${id}`, { headers: apiHeaders() })).json();
+    if (st.stage && onStage) onStage(st.stage);   // light up the real stage
     if (st.status === "shots_ready") {
       if (st.scene) state.current.scene = st.scene;
       if (st.location) state.current.location = st.location;

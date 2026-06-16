@@ -44,6 +44,7 @@ export default async (req) => {
     mode: String(form.get("mode") || "script"),
     editorial: String(form.get("editorial") || "1") === "1",
     status: "breaking_down",
+    stage: "reading",
     statusMessage: null,
     scriptText: text,
     shots: [],

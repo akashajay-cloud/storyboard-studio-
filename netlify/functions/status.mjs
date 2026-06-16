@@ -9,6 +9,7 @@ export default async (req) => {
   if (!p) return json({ status: "error", message: "project not found" });
   return json({
     status: p.status,
+    stage: p.stage || null,
     message: p.statusMessage || null,
     shots: p.shots || [],
     scene: p.scene, location: p.location || "",

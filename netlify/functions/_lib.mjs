@@ -88,8 +88,19 @@ export async function invokeClaude(system, userText, maxTokens = 16000) {
 export function parseJsonArray(raw) {
   let t = String(raw).trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   try { return JSON.parse(t); } catch {}
-  const a = t.indexOf("["), b = t.lastIndexOf("]");
-  if (a !== -1 && b > a) return JSON.parse(t.slice(a, b + 1));
+  const a = t.indexOf("["); if (a !== -1) t = t.slice(a);
+  try { const b = t.lastIndexOf("]"); if (b > 0) return JSON.parse(t.slice(0, b + 1)); } catch {}
+  // Salvage: pull out every COMPLETE top-level {...} object, so a response that was cut off
+  // mid-array still yields all the shots that finished (never a silent "half" or hard fail).
+  const objs = []; let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") { if (depth === 0) start = i; depth++; }
+    else if (ch === "}") { depth--; if (depth === 0 && start !== -1) { try { objs.push(JSON.parse(t.slice(start, i + 1))); } catch {} start = -1; } }
+  }
+  if (objs.length) return objs;
   throw new Error("Could not parse model output as JSON");
 }
 export function parseJsonObject(raw) {
