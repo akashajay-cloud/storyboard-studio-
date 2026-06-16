@@ -123,3 +123,76 @@ export function authed(req) {
 }
 export const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+
+// ===================== image generation (OpenAI gpt-image-2) =====================
+export const IMAGE_MODEL = "gpt-image-2";
+export const IMAGE_SIZE = "1024x1536"; // 9:16 portrait
+
+// Appended on a content-moderation block (clothes the faceless figures so they don't read as nude).
+export const SOFTEN_CLAUSE =
+  " All figures must be fully clothed in simple, plain, loosely-sketched clothing, with NO bare " +
+  "skin, NO bare torso, and NO suggestive or intimate framing. A neutral, non-sexual, " +
+  "professional pre-production storyboard blocking sketch.";
+
+const isModeration = (s) => /moderation_blocked|safety|content_policy|rejected/i.test(String(s));
+
+// Returns base64 PNG. Auto-softens + retries once on a moderation block.
+export async function generateImageB64(prompt) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: IMAGE_MODEL, prompt, size: IMAGE_SIZE, n: 1 }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const b64 = data?.data?.[0]?.b64_json;
+      if (b64) return b64;
+      throw new Error("image API returned no data");
+    }
+    const errText = await res.text();
+    if (attempt === 0 && isModeration(errText)) { prompt = prompt + SOFTEN_CLAUSE; continue; }
+    throw new Error(`image ${res.status}: ${errText.slice(0, 240)}`);
+  }
+  throw new Error("image generation failed");
+}
+
+// ===================== QA (Claude vision) =====================
+export const QA_PROMPT = `You are a storyboard QA reviewer. You are shown a generated panel image and its shot card.
+Grade ONLY substance + house style. Return ONLY a JSON object: {"pass": boolean, "issues": [string], "fix": string}.
+Checks (any failure => pass=false):
+1. CHARACTERS: every character in the card is present; correct FULL-NAME labels in their assigned colours.
+2. POSITIONS & FACING: left/right/depth and who-faces/approaches-whom match the action/caption intent (a figure walking toward the camera when they should engage others in-frame is a FAIL).
+3. ACTION & FRAMING: the pose/action and shot type (close-up vs wide etc.) match the card.
+4. STYLE: rough black-and-white gestural blocking sketch — faceless figures, no shading/rendering, the only colour is the name labels. Finished/rendered/shaded art is a STYLE FAIL.
+"issues": short specific problems naming the check (empty if pass). "fix": one concrete correction to append to the prompt on regeneration (empty if pass).`;
+
+function extractText(r) { return (r.content || []).map(b => b.text || "").join("").trim(); }
+
+export async function qaPanel(imageB64, shot) {
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL, max_tokens: 1024, system: QA_PROMPT,
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: imageB64 } },
+        { type: "text", text: "Shot card:\n" + JSON.stringify({ shot: shot.shot, type: shot.type, caption: shot.caption, action: shot.action, characters: shot.characters, image_prompt: shot.image_prompt }) + "\n\nReturn ONLY the JSON object." },
+      ] }],
+    }),
+  });
+  if (!res.ok) throw new Error(`qa ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  let t = extractText(await res.json()).replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  return JSON.parse(a !== -1 && b > a ? t.slice(a, b + 1) : t);
+}
+
+// ===================== panel image storage (Netlify Blobs) =====================
+export const panelStore = () => getStore("panels");
+export const panelKey = (id, shot) => `${id}/${shot}`;
+export async function savePanel(id, shot, b64) {
+  await panelStore().set(panelKey(id, shot), Buffer.from(b64, "base64"), { metadata: { contentType: "image/png" } });
+}
+export async function readPanel(id, shot) {
+  return panelStore().get(panelKey(id, shot), { type: "arrayBuffer" });
+}

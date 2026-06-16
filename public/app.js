@@ -406,19 +406,38 @@ function startStagingLoad(shot, label) {
   const im = p.querySelector(".simg"); im.classList.add("empty"); im.style.backgroundImage = "";
   startCountdown("s" + shot, im, DEMO ? 4 : 75, label);   // shimmer + estimated-time countdown
 }
+function setStagingQueued(shot) {
+  const p = sp(shot); if (!p) return;
+  stopCountdown("s" + shot);
+  const im = p.querySelector(".simg"); im.classList.add("empty"); im.classList.remove("loading"); im.style.backgroundImage = ""; im.dataset.state = "Queued";
+}
+function setStagingPending(shot, text) {   // honest live placeholder until Step 3
+  const p = sp(shot); if (!p) return;
+  stopCountdown("s" + shot);
+  const im = p.querySelector(".simg"); im.classList.add("empty"); im.classList.remove("loading"); im.style.backgroundImage = ""; im.dataset.state = text;
+}
 function regenStaging(shot) {
   const s = state.shots.find(x => x.shot === shot);
   startStagingLoad(shot, "Redrawing");
-  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setStagingImg(shot, s._img); play("tick"); }, DEMO ? 1600 : 0);
+  if (DEMO) { setTimeout(() => { s._img = demoImg(shot); setStagingImg(shot, s._img); play("tick"); }, 1600); return; }
+  genPanelReal(shot).then(r => {
+    if (r.status === "error") return setStagingPending(shot, "Error — retry");
+    s._img = panelURL(shot); setStagingImg(shot, s._img); play("tick");
+  });
+}
+async function generateOneStaging(s) {
+  startStagingLoad(s.shot, "Drawing");                 // shimmer + ETA on THIS panel only
+  if (DEMO) { await tick(1500 + Math.random() * 900); s._img = demoImg(s.shot); setStagingImg(s.shot, s._img); play("tick"); return; }
+  const r = await genPanelReal(s.shot);
+  if (r.status === "error") return setStagingPending(s.shot, "Error — retry");
+  s._img = panelURL(s.shot); setStagingImg(s.shot, s._img); play("tick");
 }
 async function renderStaging() {
   const staging = state.shots.filter(s => s.is_staging);
   $("#stagingBoard").innerHTML = staging.map(spanelHTML).join("");
-  for (const s of staging) if (!s._img) startStagingLoad(s.shot, "Drawing");   // shimmer + ETA per panel
-  if (DEMO) {
-    await tick(1800);
-    for (const s of staging) { if (!s._img) s._img = demoImg(s.shot); setStagingImg(s.shot, s._img); }
-  }
+  const pending = staging.filter(s => !s._img);
+  pending.forEach(s => setStagingQueued(s.shot));      // everything starts as "Queued"
+  await runQueue(pending, 2, generateOneStaging);      // 2 at a time; next starts as one finishes
 }
 const sboard = $("#stagingBoard");
 sboard.addEventListener("click", e => {
@@ -489,7 +508,10 @@ async function runGeneration() {
 
   let approved = 0, flagged = 0, done = 0;
   const stagingCount = all.filter(s => s.is_staging).length;
-  all.filter(s => s.is_staging).forEach(s => { if (s._img) setGenImg(s.shot, s._img); setGenPill(s.shot, "approved", "Approved"); approved++; done++; });
+  all.filter(s => s.is_staging).forEach(s => {
+    s._img = DEMO ? s._img : panelURL(s.shot);
+    if (s._img) setGenImg(s.shot, s._img); setGenPill(s.shot, "approved", "Approved"); approved++; done++;
+  });
   const setProg = () => {
     const pct = Math.round(done / totalPanels * 100);
     $("#progressFill").style.width = pct + "%"; $("#progressPct").textContent = pct + "%";
@@ -498,25 +520,35 @@ async function runGeneration() {
   };
   setProg();
   const t0 = Date.now();
-  const PER_EST = DEMO ? 4 : 60;   // rough seconds/panel for the per-panel countdown
-  for (const s of derived) {
-    const im = gp(s.shot)?.querySelector(".gimg");
-    setGenPill(s.shot, "gen", "Drawing…"); startCountdown("g" + s.shot, im, PER_EST, "Drawing"); await tick(DEMO ? 420 : 0);
-    setGenPill(s.shot, "gen", "QA ×3…"); startCountdown("g" + s.shot, im, DEMO ? 2 : 15, "QA"); await tick(DEMO ? 340 : 0);
-    if (DEMO && s.shot === 5 && !s._tried) {                       // demo: one panel trips QA, shows reason, redraws
-      s._tried = true; stopCountdown("g" + s.shot, im);
-      setGenFlagged(s.shot, "STYLE: figure shaded like finished art instead of a rough sketch.");
-      flagged++; setProg(); play("error"); await tick(1100);
-      setGenPill(s.shot, "gen", "Redrawing…"); startCountdown("g" + s.shot, im, PER_EST, "Drawing"); flagged--; setProg(); await tick(500);
+  const eta = () => { const per = (Date.now() - t0) / Math.max(1, done - stagingCount); $("#progressEta").textContent = done < totalPanels ? `~${Math.round(per * (totalPanels - done) / 1000)}s left` : "all panels done"; };
+
+  if (DEMO) {
+    for (const s of derived) {
+      const im = gp(s.shot)?.querySelector(".gimg");
+      setGenPill(s.shot, "gen", "Drawing…"); startCountdown("g" + s.shot, im, 4, "Drawing"); await tick(420);
+      setGenPill(s.shot, "gen", "QA ×3…"); startCountdown("g" + s.shot, im, 2, "QA"); await tick(340);
+      if (s.shot === 5 && !s._tried) {
+        s._tried = true; stopCountdown("g" + s.shot, im);
+        setGenFlagged(s.shot, "STYLE: figure shaded like finished art instead of a rough sketch.");
+        flagged++; setProg(); play("error"); await tick(1100);
+        setGenPill(s.shot, "gen", "Redrawing…"); startCountdown("g" + s.shot, im, 4, "Drawing"); flagged--; setProg(); await tick(500);
+      }
+      stopCountdown("g" + s.shot, im); s._img = demoImg(s.shot);
+      setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved");
+      approved++; done++; play("tick"); eta(); setProg();
     }
-    stopCountdown("g" + s.shot, im);
-    s._img = DEMO ? demoImg(s.shot) : s._img;
-    setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved");
-    approved++; done++; play("tick");
-    const per = (Date.now() - t0) / Math.max(1, done - stagingCount);
-    const eta = Math.round(per * (totalPanels - done) / 1000);
-    $("#progressEta").textContent = done < totalPanels ? `~${eta}s left` : "all panels done";
-    setProg();
+  } else {
+    await fetch("/api/start-generation", { method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" }, body: JSON.stringify({ id: state.current.id }) }).catch(() => {});
+    await runQueue(derived, 3, async (s) => {                 // 3 panels at a time; rest queued
+      const im = gp(s.shot)?.querySelector(".gimg");
+      setGenPill(s.shot, "gen", "Drawing…"); startCountdown("g" + s.shot, im, 60, "Drawing");
+      const r = await genPanelReal(s.shot);
+      stopCountdown("g" + s.shot, im);
+      if (r.status === "approved") { s._img = panelURL(s.shot); setGenImg(s.shot, s._img); clearGreason(s.shot); setGenPill(s.shot, "approved", "Approved"); approved++; }
+      else if (r.status === "flagged") { s._img = panelURL(s.shot); setGenImg(s.shot, s._img); setGenFlagged(s.shot, r.reason || "QA flagged"); flagged++; play("error"); }
+      else { setGenPill(s.shot, "flagged", "Error"); setGenFlagged(s.shot, r.reason || "Generation failed"); flagged++; play("error"); }
+      done++; play("tick"); eta(); setProg();
+    });
   }
   $("#genStateLabel").textContent = "All panels done — review them, then create your storyboard.";
   $("#createBoardBtn").classList.remove("hidden");
@@ -525,10 +557,23 @@ async function runGeneration() {
 }
 $("#createBoardBtn").addEventListener("click", () => buildBoard());
 
-function regenPanel(shot) {
+function regenPanel(shot, opts) {
   const s = state.shots.find(x => x.shot === shot);
+  const im = gp(shot)?.querySelector(".gimg");
   setGenPill(shot, "gen", "Redrawing…"); clearGreason(shot);
-  setTimeout(() => { s._img = DEMO ? demoImg(shot) : s._img; setGenImg(shot, s._img); setGenPill(shot, "approved", "Approved"); play("tick"); }, DEMO ? 800 : 0);
+  if (DEMO) {
+    startCountdown("g" + shot, im, 4, "Drawing");
+    setTimeout(() => { stopCountdown("g" + shot, im); s._img = demoImg(shot); setGenImg(shot, s._img); setGenPill(shot, "approved", "Approved"); play("tick"); }, 1500);
+    return;
+  }
+  startCountdown("g" + shot, im, 60, "Drawing");
+  genPanelReal(shot, opts).then(r => {
+    stopCountdown("g" + shot, im);
+    if (r.status === "error") { setGenPill(shot, "flagged", "Error"); setGenFlagged(shot, r.reason || "Generation failed"); return; }
+    s._img = panelURL(shot); setGenImg(shot, s._img);
+    if (r.status === "flagged") setGenFlagged(shot, r.reason || "QA flagged");
+    else { clearGreason(shot); setGenPill(shot, "approved", "Approved"); play("tick"); }
+  });
 }
 // per-panel actions: download · retry · edit (prompt + feedback) → regenerate
 $("#genBoard").addEventListener("click", e => {
@@ -541,10 +586,11 @@ $("#genBoard").addEventListener("click", e => {
   if (e.target.closest(".retry")) return regenPanel(shot);
   if (e.target.closest(".editbtn")) return card.querySelector(".geditor").classList.toggle("hidden");
   if (e.target.closest(".regenfb")) {
-    s.image_prompt = card.querySelector(".gprompt").value;
-    s._feedback = card.querySelector(".gfeedback").value;   // appended to the prompt by the backend
+    const prompt = card.querySelector(".gprompt").value;
+    const feedback = card.querySelector(".gfeedback").value;
+    s.image_prompt = prompt; s._feedback = feedback;
     card.querySelector(".geditor").classList.add("hidden");
-    return regenPanel(shot);
+    return regenPanel(shot, { prompt, feedback });
   }
 });
 
@@ -552,9 +598,11 @@ $("#genBoard").addEventListener("click", e => {
 function buildBoard(jump) {
   go("board");
   $("#boardMeta").textContent = `${state.current?.name || "Project"} · scene ${state.current?.scene || ""}`;
-  state.pages = DEMO ? demoPages() : (state.pages || []);
-  $("#pages").innerHTML = state.pages.map((p, i) => `<img src="${p}" loading="lazy" data-i="${i}" alt="page ${i + 1}" />`).join("");
-  $$("#pages img").forEach(im => im.addEventListener("click", () => openLightbox(state.pages, +im.dataset.i)));
+  // DEMO shows composed sample pages; real shows the generated panels (page-composition is a follow-up).
+  const imgs = DEMO ? demoPages() : state.shots.map(s => panelURL(s.shot));
+  state.pages = imgs;
+  $("#pages").innerHTML = imgs.map((p, i) => `<img src="${p}" loading="lazy" data-i="${i}" alt="panel ${i + 1}" />`).join("");
+  $$("#pages img").forEach(im => im.addEventListener("click", () => openLightbox(imgs, +im.dataset.i)));
 }
 $("#downloadAll").addEventListener("click", () => {
   (state.pages || []).forEach((src, i) => dl(src, `${(state.current?.name || "storyboard").replace(/\s+/g, "_")}_p${String(i + 1).padStart(2, "0")}.png`));
@@ -638,6 +686,28 @@ function startCountdown(key, imgEl, seconds, label) {
 function stopCountdown(key, imgEl) {
   if (_counters[key]) { clearInterval(_counters[key]); delete _counters[key]; }
   if (imgEl) imgEl.classList.remove("loading");
+}
+
+// Run `worker` over `items` with at most `concurrency` in flight (queue: next starts as one ends).
+async function runQueue(items, concurrency, worker) {
+  let i = 0;
+  const lane = async () => { while (i < items.length) { const it = items[i++]; await worker(it); } };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, lane));
+}
+const panelURL = shot => `/api/panel?id=${encodeURIComponent(state.current.id)}&shot=${shot}&t=${Date.now()}`;
+// Dispatch the per-panel background worker, then poll its status until it's done.
+async function genPanelReal(shotNum, opts = {}) {
+  await fetch("/.netlify/functions/panel-background", {
+    method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ id: state.current.id, shot: shotNum, qa: true, prompt: opts.prompt, feedback: opts.feedback }),
+  }).catch(() => {});
+  for (let n = 0; n < 300; n++) {            // poll up to ~12 min
+    await tick(2500);
+    let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
+    const s = (st.shots || []).find(x => x.shot === shotNum);
+    if (s && ["approved", "flagged", "error"].includes(s.panelStatus)) return { status: s.panelStatus, reason: s.reason };
+  }
+  return { status: "error", reason: "timed out" };
 }
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const today = () => new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
