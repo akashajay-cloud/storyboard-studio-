@@ -167,6 +167,17 @@
         </div>
       </div>
       <div class="board" id="stagingBoard"></div>
+
+      <div class="staging-upload hidden" id="stagingUpload">
+        <label class="su-drop" id="suDrop">
+          <input type="file" accept="image/*" hidden id="suFile" />
+          <span class="su-icon">⬆</span>
+          <span class="su-title">Upload your own staging frame</span>
+          <span class="su-sub">Drag &amp; drop or click to replace the AI reference for a location.</span>
+        </label>
+        <div class="su-target-wrap hidden" id="suTargetWrap"><label for="suTarget">For location</label>
+          <select id="suTarget"></select></div>
+      </div>
     </section>
 
     <!-- STEP 4 — DRAWING PANELS -->

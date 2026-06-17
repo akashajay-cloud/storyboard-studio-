@@ -61,7 +61,8 @@ renderSound();
 function go(step) {
   state.step = step;
   $$(".screen").forEach(s => s.classList.toggle("active", s.dataset.screen === step));
-  $("#stepper").style.visibility = (step === "projects") ? "hidden" : "visible";
+  // stepper only appears once we're past the script upload (from the shotlist onward)
+  $("#stepper").style.visibility = ["review", "staging", "generate", "board"].includes(step) ? "visible" : "hidden";
   const idx = STEPS.indexOf(step);
   $$(".step").forEach(b => {
     const i = STEPS.indexOf(b.dataset.step);
@@ -405,7 +406,6 @@ function spanelHTML(s) {
     <div class="sactions">
       <button class="sbtn regen">↻ Regenerate</button>
       <button class="sbtn edit">✎ Edit</button>
-      <label class="sbtn upload">⬆ Upload<input type="file" accept="image/*" hidden></label>
       <button class="sbtn del" title="Delete this frame so you can upload your own or regenerate">🗑 Delete</button>
     </div>
     <div class="seditor hidden">
@@ -462,12 +462,39 @@ async function renderStaging() {
   if (gbtn) { gbtn.disabled = true; gbtn.title = "Drawing the staging frames first…"; }
   const staging = state.shots.filter(s => s.is_staging);
   $("#stagingBoard").innerHTML = staging.map(spanelHTML).join("");
+  setupStagingUpload(staging);                          // the separate drop-area below the panels
   const pending = staging.filter(s => !s._img);
   pending.forEach(s => setStagingQueued(s.shot));      // everything starts as "Queued"
   await runQueue(pending, 2, generateOneStaging);      // 2 at a time; next starts as one finishes
   if (gbtn) { gbtn.disabled = false; gbtn.title = ""; } // all staging frames ready
   unlockStep("generate");
 }
+// Separate upload drop-area (below the panels): drop/pick your own frame to replace a location's
+// staging reference. Persists server-side via /api/upload-panel so derived shots anchor to it.
+function setupStagingUpload(staging) {
+  const wrap = $("#stagingUpload"); if (!wrap) return;
+  wrap.classList.toggle("hidden", staging.length === 0);
+  const sel = $("#suTarget");
+  sel.innerHTML = staging.map(s => `<option value="${s.shot}">#${s.shot} · ${esc(s.setting || s.type)}</option>`).join("");
+  $("#suTargetWrap").classList.toggle("hidden", staging.length <= 1);
+}
+async function applyStagingUpload(file) {
+  if (!file) return;
+  const shot = +($("#suTarget")?.value) || (state.shots.find(s => s.is_staging)?.shot);
+  const s = state.shots.find(x => x.shot === shot); if (!s) return;
+  if (DEMO) { const r = new FileReader(); r.onload = () => { s._img = r.result; setStagingImg(shot, s._img); play("tick"); }; r.readAsDataURL(file); return; }
+  startStagingLoad(shot, "Uploading");
+  const fd = new FormData(); fd.append("id", state.current.id); fd.append("shot", String(shot)); fd.append("image", file);
+  try { await fetch("/api/upload-panel", { method: "POST", headers: apiHeaders(), body: fd }); } catch (_) {}
+  s._img = panelURL(shot); setStagingImg(shot, s._img); play("tick");
+}
+(() => {
+  const drop = $("#suDrop"), file = $("#suFile"); if (!drop || !file) return;
+  file.addEventListener("change", () => { if (file.files[0]) { applyStagingUpload(file.files[0]); file.value = ""; } });
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("drag"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+  drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("drag"); if (e.dataTransfer.files[0]) applyStagingUpload(e.dataTransfer.files[0]); });
+})();
 const sboard = $("#stagingBoard");
 sboard.addEventListener("click", e => {
   const card = e.target.closest(".spanel"); if (!card) return;
@@ -482,21 +509,6 @@ sboard.addEventListener("click", e => {
   const im = e.target.closest(".simg");
   if (im && !im.classList.contains("empty")) { const s = state.shots.find(x => x.shot === shot); if (s._img) openLightbox([s._img], 0); }
 });
-// Uploading a staging frame PERSISTS it server-side so it becomes the real reference for the scene
-// (derived shots anchor to it, and it shows on the storyboard) — not just a local preview.
-sboard.addEventListener("change", async e => {
-  if (e.target.type !== "file" || !e.target.files[0]) return;
-  const shot = +e.target.closest(".spanel").dataset.shot, s = state.shots.find(x => x.shot === shot), f = e.target.files[0];
-  if (DEMO) {
-    const r = new FileReader();
-    r.onload = () => { s._img = r.result; setStagingImg(shot, s._img); play("tick"); };
-    r.readAsDataURL(f); return;
-  }
-  startStagingLoad(shot, "Uploading");
-  const fd = new FormData(); fd.append("id", state.current.id); fd.append("shot", String(shot)); fd.append("image", f);
-  try { await fetch("/api/upload-panel", { method: "POST", headers: apiHeaders(), body: fd }); } catch (_) {}
-  s._img = panelURL(shot); setStagingImg(shot, s._img); play("tick");
-});
 $("#toGenerate").addEventListener("click", () => { if ($("#toGenerate").disabled) return; go("generate"); runGeneration(); });
 
 /* ============================ drawing panels (status card + QA pills) ============================ */
@@ -509,6 +521,7 @@ function gpanelHTML(s) {
       <button class="gact dl" title="Download this panel">⬇ Download</button>
       <button class="gact retry" title="Redraw with the same prompt">↻ Retry</button>
       <button class="gact editbtn">✎ Edit</button>
+      <button class="gact approve hidden" title="Keep this shot even though QA flagged it">✓ Approve anyway</button>
     </div>
     <div class="geditor hidden">
       <label>Edit the prompt and/or add feedback, then regenerate</label>
@@ -531,9 +544,10 @@ function setGenImg(shot, img) {
 function setGenFlagged(shot, reason) {
   const p = gp(shot); if (!p) return; p.classList.add("fail");
   p.querySelector(".gright").innerHTML = `<span class="pill flagged">QA flagged</span>`;
+  p.querySelector(".approve")?.classList.remove("hidden");   // offer "approve anyway"
   if (!p.querySelector(".greason")) p.querySelector(".gmeta").insertAdjacentHTML("afterend", `<div class="greason">${esc(reason)}</div>`);
 }
-function clearGreason(shot) { const p = gp(shot); if (p) { p.classList.remove("fail"); p.querySelector(".greason")?.remove(); } }
+function clearGreason(shot) { const p = gp(shot); if (p) { p.classList.remove("fail"); p.querySelector(".greason")?.remove(); p.querySelector(".approve")?.classList.add("hidden"); } }
 
 async function runGeneration() {
   const all = state.shots, staging = all.filter(s => s.is_staging), derived = all.filter(s => !s.is_staging), totalPanels = all.length;
@@ -626,6 +640,13 @@ $("#genBoard").addEventListener("click", e => {
     return;
   }
   if (e.target.closest(".retry")) return regenPanel(shot);
+  if (e.target.closest(".approve")) {                 // keep a QA-flagged shot anyway
+    clearGreason(shot); setGenPill(shot, "approved", "Approved");
+    if (s) s.panelStatus = "approved";
+    const a = $("#genApproved"), f = $("#genFlagged");
+    if (a && f) { a.textContent = `${(parseInt(a.textContent) || 0) + 1} approved`; f.textContent = `${Math.max(0, (parseInt(f.textContent) || 0) - 1)} flagged`; }
+    play("tick"); return;
+  }
   if (e.target.closest(".editbtn")) return card.querySelector(".geditor").classList.toggle("hidden");
   if (e.target.closest(".regenfb")) {
     const prompt = card.querySelector(".gprompt").value;
