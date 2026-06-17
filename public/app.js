@@ -84,7 +84,10 @@ $$(".step").forEach(b => b.addEventListener("click", () => {
   go(b.dataset.step);
 }));
 $$("[data-goto]").forEach(b => b.addEventListener("click", () => go(b.dataset.goto)));
-$("#brandHome").addEventListener("click", () => { renderProjects(); go("projects"); });
+// Home = the script/upload screen (a fresh new project). "My Projects" opens the saved-projects grid.
+$("#brandHome").addEventListener("click", () => newProject());
+$("#myProjectsBtn")?.addEventListener("click", () => { renderProjects(); go("projects"); });
+$("#newProjectBtn")?.addEventListener("click", () => newProject());
 
 /* ============================ projects ============================ */
 function loadProjects() {
@@ -199,8 +202,10 @@ $$(".tab").forEach(t => t.addEventListener("click", () => {
   $(".dz-text span").textContent = shortlist ? "CSV, XLSX, PDF, DOCX, or TXT — up to 15 MB" : "PDF, DOCX, or TXT — up to 15 MB";
 }));
 
+// Title-case a filename-derived name ("test-oneshot" -> "Test-Oneshot"), keeping separators.
+const prettifyName = s => String(s || "").replace(/\b\w/g, c => c.toUpperCase());
 $("#startBtn").addEventListener("click", async () => {
-  const name = $("#projectName").value || (state.file ? state.file.name.replace(/\.[^.]+$/, "") : "Untitled");
+  const name = $("#projectName").value.trim() || (state.file ? prettifyName(state.file.name.replace(/\.[^.]+$/, "")) : "Untitled");
   if (!state.file && !DEMO) { dz.classList.add("drag"); setTimeout(() => dz.classList.remove("drag"), 600); return; }
   state.current = { id: "p" + Date.now(), name, scene: "01", format: "9:16", location: "",
                     status: "working", date: "just now", panelsDone: 0, panelsTotal: 0 };
@@ -401,6 +406,7 @@ function spanelHTML(s) {
       <button class="sbtn regen">↻ Regenerate</button>
       <button class="sbtn edit">✎ Edit</button>
       <label class="sbtn upload">⬆ Upload<input type="file" accept="image/*" hidden></label>
+      <button class="sbtn del" title="Delete this frame so you can upload your own or regenerate">🗑 Delete</button>
     </div>
     <div class="seditor hidden">
       <label>Staging description — edit, then regenerate</label>
@@ -424,10 +430,15 @@ function setStagingQueued(shot) {
   stopCountdown("s" + shot);
   const im = p.querySelector(".simg"); im.classList.add("empty"); im.classList.remove("loading"); im.style.backgroundImage = ""; im.dataset.state = "Queued";
 }
-function setStagingPending(shot, text) {   // honest live placeholder until Step 3
+function setStagingPending(shot, text) {   // honest live placeholder
   const p = sp(shot); if (!p) return;
   stopCountdown("s" + shot);
   const im = p.querySelector(".simg"); im.classList.add("empty"); im.classList.remove("loading"); im.style.backgroundImage = ""; im.dataset.state = text;
+}
+function clearStaging(shot) {               // delete the frame so the user can upload their own / regenerate
+  const s = state.shots.find(x => x.shot === shot); if (s) s._img = null;
+  setStagingPending(shot, "Deleted — upload your own or regenerate");
+  play("tick");
 }
 function regenStaging(shot) {
   const s = state.shots.find(x => x.shot === shot);
@@ -462,6 +473,7 @@ sboard.addEventListener("click", e => {
   const card = e.target.closest(".spanel"); if (!card) return;
   const shot = +card.dataset.shot;
   if (e.target.closest(".regen")) return regenStaging(shot);
+  if (e.target.closest(".del")) return clearStaging(shot);
   if (e.target.closest(".edit")) return card.querySelector(".seditor").classList.toggle("hidden");
   if (e.target.closest(".applyedit")) {
     state.shots.find(x => x.shot === shot).image_prompt = card.querySelector(".seditor textarea").value;
@@ -470,13 +482,20 @@ sboard.addEventListener("click", e => {
   const im = e.target.closest(".simg");
   if (im && !im.classList.contains("empty")) { const s = state.shots.find(x => x.shot === shot); if (s._img) openLightbox([s._img], 0); }
 });
-sboard.addEventListener("change", e => {
-  if (e.target.type === "file" && e.target.files[0]) {
-    const shot = +e.target.closest(".spanel").dataset.shot, s = state.shots.find(x => x.shot === shot);
+// Uploading a staging frame PERSISTS it server-side so it becomes the real reference for the scene
+// (derived shots anchor to it, and it shows on the storyboard) — not just a local preview.
+sboard.addEventListener("change", async e => {
+  if (e.target.type !== "file" || !e.target.files[0]) return;
+  const shot = +e.target.closest(".spanel").dataset.shot, s = state.shots.find(x => x.shot === shot), f = e.target.files[0];
+  if (DEMO) {
     const r = new FileReader();
     r.onload = () => { s._img = r.result; setStagingImg(shot, s._img); play("tick"); };
-    r.readAsDataURL(e.target.files[0]);
+    r.readAsDataURL(f); return;
   }
+  startStagingLoad(shot, "Uploading");
+  const fd = new FormData(); fd.append("id", state.current.id); fd.append("shot", String(shot)); fd.append("image", f);
+  try { await fetch("/api/upload-panel", { method: "POST", headers: apiHeaders(), body: fd }); } catch (_) {}
+  s._img = panelURL(shot); setStagingImg(shot, s._img); play("tick");
 });
 $("#toGenerate").addEventListener("click", () => { if ($("#toGenerate").disabled) return; go("generate"); runGeneration(); });
 
@@ -517,12 +536,16 @@ function setGenFlagged(shot, reason) {
 function clearGreason(shot) { const p = gp(shot); if (p) { p.classList.remove("fail"); p.querySelector(".greason")?.remove(); } }
 
 async function runGeneration() {
-  const all = state.shots, derived = all.filter(s => !s.is_staging), totalPanels = all.length;
+  const all = state.shots, staging = all.filter(s => s.is_staging), derived = all.filter(s => !s.is_staging), totalPanels = all.length;
   $("#genTitle").textContent = state.current?.name || "Project";
   $("#genSub").textContent = `Scene ${state.current?.scene || "01"}` + (state.current?.location ? ` — ${state.current.location}` : "");
   $("#genStateLabel").textContent = "Generating…";
   $("#genActions").classList.remove("hidden"); $("#resumeBtn").classList.add("hidden");
-  $("#genBoard").innerHTML = all.map(gpanelHTML).join("");
+  // Two groups: the staging frames (already locked in) and the actual shots being drawn from them.
+  const groupHdr = t => `<div class="genGroup">${t}</div>`;
+  $("#genBoard").innerHTML =
+    (staging.length ? groupHdr("Staging frames · scene references") + staging.map(gpanelHTML).join("") : "")
+    + groupHdr("Shots") + derived.map(gpanelHTML).join("");
 
   let approved = 0, flagged = 0, done = 0;
   const stagingCount = all.filter(s => s.is_staging).length;
@@ -614,17 +637,90 @@ $("#genBoard").addEventListener("click", e => {
 });
 
 /* ============================ storyboard ============================ */
+// Storyboard sheet: 6 panels per page, header (PROJECT · SCENE · FORMAT · page), caption under each.
+const BOARD_PER_PAGE = 6;
+const boardImg = s => DEMO ? demoImg(s.shot) : panelURL(s.shot);
+function boardPages() {
+  const shots = state.shots || [], pages = [];
+  for (let i = 0; i < shots.length; i += BOARD_PER_PAGE) pages.push(shots.slice(i, i + BOARD_PER_PAGE));
+  return pages;
+}
 function buildBoard(jump) {
   go("board");
-  $("#boardMeta").textContent = `${state.current?.name || "Project"} · scene ${state.current?.scene || ""}`;
-  // DEMO shows composed sample pages; real shows the generated panels (page-composition is a follow-up).
-  const imgs = DEMO ? demoPages() : state.shots.map(s => panelURL(s.shot));
-  state.pages = imgs;
-  $("#pages").innerHTML = imgs.map((p, i) => `<img src="${p}" loading="lazy" data-i="${i}" alt="panel ${i + 1}" />`).join("");
-  $$("#pages img").forEach(im => im.addEventListener("click", () => openLightbox(imgs, +im.dataset.i)));
+  const proj = state.current?.name || "Project", scene = state.current?.scene || "01";
+  $("#boardMeta").textContent = `${proj} · scene ${scene}`;
+  const pages = boardPages();
+  state.boardPages = pages;
+  $("#pages").innerHTML = pages.map((pg, pi) => {
+    const cells = pg.map(s => {
+      const url = boardImg(s);
+      return `<div class="cell">
+        <div class="cellimg" data-url="${url}" style="background-image:url('${url}')"></div>
+        <div class="cellcap"><b>#${String(s.shot).padStart(2, "0")} · ${esc(s.type)}</b><p>${esc(s.caption || s.action || "")}</p></div>
+      </div>`;
+    }).join("");
+    return `<div class="sheet">
+      <div class="sheethead"><span>${esc(proj)}</span><span>Scene ${esc(scene)}</span><span>9:16</span><span>Page ${pi + 1} / ${pages.length}</span></div>
+      <div class="sheetgrid">${cells}</div></div>`;
+  }).join("");
+  const urls = [...$$("#pages .cellimg")].map(e => e.dataset.url);
+  $$("#pages .cellimg").forEach((el, i) => el.addEventListener("click", () => openLightbox(urls, i)));
 }
-$("#downloadAll").addEventListener("click", () => {
-  (state.pages || []).forEach((src, i) => dl(src, `${(state.current?.name || "storyboard").replace(/\s+/g, "_")}_p${String(i + 1).padStart(2, "0")}.png`));
+
+/* ---- compose each page to a downloadable storyboard sheet PNG (header + frames + captions) ---- */
+const loadImg = src => new Promise(res => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
+function drawCover(ctx, im, x, y, w, h) {
+  const ir = im.width / im.height, r = w / h; let sw, sh, sx, sy;
+  if (ir > r) { sh = im.height; sw = sh * r; sx = (im.width - sw) / 2; sy = 0; }
+  else { sw = im.width; sh = sw / r; sx = 0; sy = (im.height - sh) / 2; }
+  ctx.drawImage(im, sx, sy, sw, sh, x, y, w, h);
+}
+function wrapText(ctx, text, x, y, maxW, lh, maxLines) {
+  const words = String(text).split(/\s+/); let line = "", n = 0;
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, y); y += lh; line = w; if (++n >= maxLines) return;
+    } else line = test;
+  }
+  if (line) ctx.fillText(line, x, y);
+}
+async function composeSheet(pg, proj, scene, pi, total) {
+  const cols = 3, rows = 2, pad = 48, gap = 28, headH = 72, capH = 132, Fw = 560, Fh = Math.round(Fw * 16 / 9);
+  const W = pad * 2 + cols * Fw + (cols - 1) * gap, H = pad * 2 + headH + rows * (Fh + capH) + (rows - 1) * gap;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#111"; ctx.font = "700 30px Inter, Arial, sans-serif";
+  ctx.fillText(proj.toUpperCase(), pad, pad + 34);
+  ctx.font = "500 22px Inter, Arial, sans-serif"; ctx.fillStyle = "#666"; ctx.textAlign = "right";
+  ctx.fillText(`SCENE ${scene}   ·   9:16   ·   PAGE ${pi + 1} / ${total}`, W - pad, pad + 34);
+  ctx.textAlign = "left";
+  ctx.strokeStyle = "#ddd"; ctx.beginPath(); ctx.moveTo(pad, pad + headH - 10); ctx.lineTo(W - pad, pad + headH - 10); ctx.stroke();
+  const imgs = await Promise.all(pg.map(s => loadImg(boardImg(s))));
+  for (let i = 0; i < pg.length; i++) {
+    const s = pg[i], x = pad + (i % cols) * (Fw + gap), y = pad + headH + ((i / cols) | 0) * (Fh + capH + gap);
+    ctx.fillStyle = "#000"; ctx.fillRect(x, y, Fw, Fh);
+    if (imgs[i]) drawCover(ctx, imgs[i], x, y, Fw, Fh);
+    ctx.strokeStyle = "#ccc"; ctx.strokeRect(x + 0.5, y + 0.5, Fw, Fh);
+    ctx.fillStyle = "#111"; ctx.font = "700 16px ui-monospace, monospace";
+    ctx.fillText(`#${String(s.shot).padStart(2, "0")} · ${s.type}`, x, y + Fh + 28);
+    ctx.fillStyle = "#555"; ctx.font = "400 15px Inter, Arial, sans-serif";
+    wrapText(ctx, (s.caption || s.action || "").replace(/\s*\n\s*/g, " "), x, y + Fh + 52, Fw, 20, 4);
+  }
+  return c.toDataURL("image/png");
+}
+$("#downloadAll").addEventListener("click", async () => {
+  const pages = state.boardPages || boardPages(); if (!pages.length) return;
+  const proj = state.current?.name || "Storyboard", scene = state.current?.scene || "01";
+  const btn = $("#downloadAll"), label = btn.textContent; btn.disabled = true; btn.textContent = "Composing…";
+  try {
+    for (let i = 0; i < pages.length; i++) {
+      const data = await composeSheet(pages[i], proj, scene, i, pages.length);
+      dl(data, `${proj.replace(/\s+/g, "_")}_storyboard_p${String(i + 1).padStart(2, "0")}.png`);
+      await tick(150);
+    }
+  } finally { btn.disabled = false; btn.textContent = label; }
 });
 
 /* ============================ lightbox (prev / next) ============================ */
@@ -849,5 +945,7 @@ else {
     }
   }).catch(() => {});
 }
-renderProjects();
-go("projects");
+loadProjects();           // so "My Projects" has data; landing page is the upload screen
+resetUpload();
+resetUnlock("upload");
+go("upload");

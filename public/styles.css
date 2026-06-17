@@ -178,9 +178,18 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
 .progressmeta { display: flex; justify-content: space-between; margin-top: 10px; font-size: 13px; color: var(--muted-foreground); font-family: var(--mono); }
 
 /* ---------- storyboard pages ---------- */
-.pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
-.pages img { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; cursor: zoom-in; transition: transform .12s, border-color .2s; }
-.pages img:hover { transform: translateY(-3px); border-color: var(--muted-foreground); }
+/* storyboard sheet view: 6 panels/page, header + caption under each frame */
+.pages { display: flex; flex-direction: column; gap: 22px; }
+.sheet { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 18px 20px; }
+.sheethead { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-foreground); border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 14px; }
+.sheethead span:first-child { color: var(--foreground); font-weight: 600; }
+.sheetgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.cell { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--background); }
+.cell .cellimg { aspect-ratio: 9/16; background: #0a0a0a center/cover no-repeat; cursor: zoom-in; }
+.cell .cellcap { padding: 8px 10px 10px; }
+.cell .cellcap b { display: block; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; color: var(--primary); letter-spacing: .02em; margin-bottom: 4px; }
+.cell .cellcap p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted-foreground); white-space: pre-line; }
+@media (max-width: 720px) { .sheetgrid { grid-template-columns: repeat(2, 1fr); } }
 
 /* ---------- lightbox ---------- */
 .lightbox { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.92); display: none; align-items: center; justify-content: center; cursor: zoom-out; padding: 28px; }
@@ -424,6 +433,26 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
   background-size: 220% 100%; animation: shimmer 1.4s linear infinite;
 }
 @keyframes shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
+
+/* redraw/regenerate: a visible "working" overlay even when an image is already present */
+.gimg.loading::after, .simg.loading::after {
+  content: attr(data-state); position: absolute; inset: 0; display: grid; place-items: center;
+  text-align: center; padding: 8px; background: oklch(0.16 0.006 60 / 0.62); color: var(--foreground);
+  font-size: 12px; animation: pulseload 1.15s ease-in-out infinite;
+}
+@keyframes pulseload { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+
+/* delete action on a staging panel */
+.sbtn.del:hover { color: var(--destructive); border-color: oklch(0.62 0.2 25 / 0.5); background: var(--secondary); }
+
+/* generate screen: section headers separating staging frames from the actual shots */
+.genGroup { grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted-foreground); padding: 16px 2px 4px; border-top: 1px solid var(--border); }
+.genGroup:first-child { border-top: 0; padding-top: 2px; }
+
+/* header "My Projects" button */
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--foreground); padding: 7px 13px; font-size: 13px; }
+.btn.ghost:hover { background: var(--secondary); }
 
 /* shotlist: move up/down + insert-below controls */
 .movebtns { display: inline-flex; flex-direction: column; gap: 3px; }
