@@ -434,20 +434,39 @@ function renderReferences() {
   });
 }
 const refStripOf = card => card.querySelector(".refstrip");
-function insertThumb(card, node) { refStripOf(card).insertBefore(node, card.querySelector(".reftile.up")); card.classList.add("ok"); }
+function insertBeforeUpload(card, node) { refStripOf(card).insertBefore(node, card.querySelector(".reftile.up")); }
+function insertThumb(card, node) { insertBeforeUpload(card, node); card.classList.add("ok"); }
+function loadingTile(card, label) { const t = document.createElement("div"); t.className = "refthumb loading"; t.dataset.state = label || "…"; insertBeforeUpload(card, t); return t; }
+function failTile(tile, msg) { tile.classList.remove("loading"); tile.classList.add("err"); tile.dataset.state = msg || "✕ failed"; }
 function thumbNode(which, rid, src) {
   const t = document.createElement("div"); t.className = "refthumb"; t.dataset.rid = rid;
   t.style.backgroundImage = `url('${src || assetImgURL(which, rid)}')`;
   t.innerHTML = `<button class="refdel" title="Remove">×</button>`;
   return t;
 }
+// Downscale a big upload before sending — phone/camera photos easily exceed Netlify's ~6MB function
+// body limit (which would fail the upload). 1280px JPEG keeps it tiny and is plenty for a reference.
+function downscaleImage(file, maxDim = 1280) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      c.toBlob(b => resolve(b || file), "image/jpeg", 0.9);
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => resolve(file);
+    img.src = URL.createObjectURL(file);
+  });
+}
 async function genReference(which, card) {
   const a = getAsset(which); const before = new Set((a.refs || []).map(r => r.rid));
-  const tile = document.createElement("div"); tile.className = "refthumb loading"; tile.dataset.state = "✦";
-  insertThumb(card, tile);
+  const tile = loadingTile(card, "drawing…");
   if (DEMO) {
     await tick(1600); const rid = "d" + Math.random().toString(36).slice(2, 6), src = demoImg((a.refs || []).length + 1);
-    a.refs = [...(a.refs || []), { rid, kind: "gen", _src: src }]; tile.remove(); insertThumb(card, thumbNode(which, rid, src)); play("tick"); return;
+    a.refs = [...(a.refs || []), { rid, kind: "gen", _src: src }]; tile.replaceWith(thumbNode(which, rid, src)); card.classList.add("ok"); play("tick"); return;
   }
   await fetch("/.netlify/functions/reference-background", { method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" }, body: JSON.stringify({ id: state.current.id, which }) }).catch(() => {});
   for (let n = 0; n < 120; n++) {
@@ -456,16 +475,22 @@ async function genReference(which, card) {
     const sa = allAssets(st.assets).find(x => x.which === which);
     if (sa) { const fresh = (sa.refs || []).filter(r => !before.has(r.rid)); if (fresh.length) { a.refs = sa.refs; tile.remove(); fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid))); play("tick"); return; } }
   }
-  tile.remove(); play("error");   // timed out / generation failed
+  failTile(tile, "✕ failed"); play("error");   // timed out / generation failed
 }
 async function uploadReferences(which, files, card) {
   const a = getAsset(which);
   for (const f of files) {
-    if (DEMO) { await new Promise(res => { const r = new FileReader(); r.onload = () => { const rid = "d" + Math.random().toString(36).slice(2, 6); a.refs = [...(a.refs || []), { rid, kind: "upload", _src: r.result }]; insertThumb(card, thumbNode(which, rid, r.result)); res(); }; r.readAsDataURL(f); }); continue; }
-    const fd = new FormData(); fd.append("id", state.current.id); fd.append("which", which); fd.append("image", f);
-    try { const res = await (await fetch("/api/set-asset", { method: "POST", headers: apiHeaders(), body: fd })).json(); if (res && res.rid) { a.refs = [...(a.refs || []), { rid: res.rid, kind: "upload" }]; insertThumb(card, thumbNode(which, res.rid)); } } catch (_) {}
+    const tile = loadingTile(card, "uploading…");
+    if (DEMO) { await new Promise(res => { const r = new FileReader(); r.onload = () => { const rid = "d" + Math.random().toString(36).slice(2, 6); a.refs = [...(a.refs || []), { rid, kind: "upload", _src: r.result }]; tile.replaceWith(thumbNode(which, rid, r.result)); card.classList.add("ok"); res(); }; r.readAsDataURL(f); }); play("tick"); continue; }
+    try {
+      const blob = await downscaleImage(f);
+      const fd = new FormData(); fd.append("id", state.current.id); fd.append("which", which); fd.append("image", blob, "ref.jpg");
+      const resp = await fetch("/api/set-asset", { method: "POST", headers: apiHeaders(), body: fd });
+      const res = await resp.json().catch(() => ({}));
+      if (resp.ok && res.rid) { a.refs = [...(a.refs || []), { rid: res.rid, kind: "upload" }]; tile.replaceWith(thumbNode(which, res.rid)); card.classList.add("ok"); play("tick"); }
+      else { failTile(tile, "✕"); play("error"); alert("Upload failed: " + (res.error || ("HTTP " + resp.status))); }
+    } catch (e) { failTile(tile, "✕"); play("error"); alert("Upload failed: " + String(e).slice(0, 140)); }
   }
-  play("tick");
 }
 async function deleteRef(which, rid, thumb) {
   const a = getAsset(which); if (a) a.refs = (a.refs || []).filter(r => r.rid !== rid);
@@ -480,6 +505,7 @@ refsWrap.addEventListener("click", e => {
   const del = e.target.closest(".refdel"); if (del) { const t = del.closest(".refthumb"); return deleteRef(which, t.dataset.rid, t); }
   if (e.target.closest(".reftile.gen")) return genReference(which, card);
   const t = e.target.closest(".refthumb");
+  if (t && t.classList.contains("err")) { t.remove(); return; }   // dismiss a failed tile
   if (t && !t.classList.contains("loading")) openLightbox([t.style.backgroundImage.slice(5, -2)], 0);
 });
 refsWrap.addEventListener("change", e => {
