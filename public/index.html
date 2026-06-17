@@ -27,9 +27,10 @@
     <nav class="stepper" id="stepper">
       <button class="step" data-step="upload"><i>1</i>Script</button>
       <button class="step" data-step="review"><i>2</i>Shotlist</button>
-      <button class="step" data-step="staging"><i>3</i>Staging</button>
-      <button class="step" data-step="generate"><i>4</i>Generate</button>
-      <button class="step" data-step="board"><i>5</i>Storyboard</button>
+      <button class="step" data-step="references"><i>3</i>References</button>
+      <button class="step" data-step="staging"><i>4</i>Staging</button>
+      <button class="step" data-step="generate"><i>5</i>Generate</button>
+      <button class="step" data-step="board"><i>6</i>Storyboard</button>
     </nav>
 
     <div class="topbar-right">
@@ -157,6 +158,22 @@
       </div>
     </section>
 
+    <!-- STEP 2b — REFERENCES -->
+    <section class="screen" data-screen="references">
+      <div class="screen-head">
+        <div><h2>Build your references</h2><p class="muted">Lock the look of your characters, locations and key props once — every shot reuses them. Upload your own, or generate and approve.</p></div>
+        <div class="head-actions">
+          <button class="btn" data-goto="review">← Shotlist</button>
+          <button class="btn primary" id="toStagingFromRefs">References ready → Staging</button>
+        </div>
+      </div>
+      <div id="refsWrap">
+        <div class="refsection" id="refsecChars"><h3 class="refhead">Characters</h3><div class="refgrid" id="refChars"></div></div>
+        <div class="refsection" id="refsecLocs"><h3 class="refhead">Locations</h3><div class="refgrid" id="refLocs"></div></div>
+        <div class="refsection" id="refsecProps"><h3 class="refhead">Key props</h3><div class="refgrid" id="refProps"></div></div>
+      </div>
+    </section>
+
     <!-- STEP 3 — STAGING -->
     <section class="screen" data-screen="staging">
       <div class="screen-head">
@@ -211,7 +228,8 @@
         <div class="head-actions">
           <button class="btn" data-goto="review">← Edit shotlist</button>
           <button class="btn" data-goto="generate">Regenerate panels</button>
-          <button class="btn primary" id="downloadAll">↓ Download all</button>
+          <button class="btn" id="downloadAll">↓ PNGs</button>
+          <button class="btn primary" id="downloadPdf">↓ PDF</button>
         </div>
       </div>
       <div class="pages" id="pages"></div>

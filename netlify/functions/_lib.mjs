@@ -49,6 +49,16 @@ Return ONLY the full enriched JSON array.`;
 
 export const SCENE_PROMPT = `Read the script and return ONLY a JSON object {"scene": "<number or '01'>", "label": "<short location/scene label, or ''>"} describing the first/primary scene. No commentary.`;
 
+// ---- production-asset detection: enrich the known characters/locations with a visual "look" and
+// ---- pull out the KEY recurring story props (so we can build reference images for each) ----
+export const ASSET_PROMPT = `You are a production designer. You are given a micro-drama script plus its already-detected CHARACTERS (with gender) and LOCATIONS (setup id + setting). Return ONLY a JSON object describing the assets to build reference images for:
+{
+ "characters": [{"name": "<EXACT given name>", "look": "<one concrete visual line: apparent age, build, skin/hair, and typical wardrobe, inferred from the script>"}],
+ "locations": [{"id": "<EXACT given setup id>", "label": "<short human location name>", "desc": "<one concrete visual line: the look of the place, key features, time of day>"}],
+ "props": [{"name": "<short>", "desc": "<one concrete visual line>"}]
+}
+Rules: keep EXACTLY the given character names and location ids (one object each). For "props", include ONLY the few KEY, recurring, story-significant objects (AT MOST 6) — never background clutter. No commentary, no markdown.`;
+
 const PALETTE = ["red", "blue", "green", "orange", "purple", "teal", "magenta", "brown", "olive", "navy"];
 
 // Assigns a stable colour to each character name. The label instruction itself is built at
@@ -125,6 +135,19 @@ export const CINEMATIC_LEAD =
   "A photorealistic, full-colour cinematic film still — realistic natural lighting, real human " +
   "figures with believable faces and clothing, real materials and textures, filmic colour, shallow " +
   "cinematic depth, as if a frame grabbed from a finished film.";
+
+// asset id slug (stable key for a character / location / prop reference image)
+export const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "x";
+// Reference-image prompts: clean, well-lit, neutral so they're reusable identity anchors.
+export const charRefPrompt = (c) =>
+  `A photorealistic character reference portrait of ${c.gender || "a person"}${c.look ? ", " + c.look : ""}. ` +
+  `Neutral friendly expression, looking at camera, framed head to mid-torso, even soft studio lighting, plain light-grey background. Full colour, sharp, realistic skin and clothing. No text, no props, one person only.`;
+export const locRefPrompt = (l) =>
+  `A photorealistic establishing reference shot of ${l.label || l.id}${l.desc ? " — " + l.desc : ""}. ` +
+  `Wide angle showing the whole space and its key features, natural lighting, full colour, realistic and detailed. NO people in the frame, no text.`;
+export const propRefPrompt = (p) =>
+  `A photorealistic reference shot of ${p.name}${p.desc ? " — " + p.desc : ""}. ` +
+  `The single object centred on a plain neutral background, even lighting, full colour, realistic materials, product-photo clarity. No people, no text.`;
 
 // Appended on a content-moderation block (clothes the faceless figures so they don't read as nude).
 export const SOFTEN_CLAUSE =
@@ -226,6 +249,22 @@ export async function savePanel(id, shot, b64) {
 }
 export async function readPanel(id, shot) {
   return panelStore().get(panelKey(id, shot), { type: "arrayBuffer" });
+}
+
+// ===================== asset reference storage (Netlify Blobs) =====================
+// which = "char_<slug>" | "loc_<slug>" | "prop_<slug>"; an asset can hold MANY reference images
+// (different angles), each addressed by a unique rid.
+export const mkRid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+export const assetStore = () => getStore("assets");
+const assetKey = (id, which, rid) => `${id}/${which}__${rid}`;
+export async function saveAssetImg(id, which, rid, b64) {
+  await assetStore().set(assetKey(id, which, rid), Buffer.from(b64, "base64"), { metadata: { contentType: "image/png" } });
+}
+export async function readAssetImg(id, which, rid) {
+  return assetStore().get(assetKey(id, which, rid), { type: "arrayBuffer" });
+}
+export async function deleteAssetImg(id, which, rid) {
+  try { await assetStore().delete(assetKey(id, which, rid)); } catch (_) {}
 }
 
 // ===================== prompt helpers =====================

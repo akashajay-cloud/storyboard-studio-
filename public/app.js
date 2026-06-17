@@ -2,7 +2,7 @@
 // screen is fully clickable; on Netlify it calls /api/* instead.
 
 const DEMO = location.protocol === "file:" || location.hostname === "localhost";
-const STEPS = ["upload", "analyzing", "review", "staging", "generate", "board"];
+const STEPS = ["upload", "analyzing", "review", "references", "staging", "generate", "board"];
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -62,7 +62,7 @@ function go(step) {
   state.step = step;
   $$(".screen").forEach(s => s.classList.toggle("active", s.dataset.screen === step));
   // stepper only appears once we're past the script upload (from the shotlist onward)
-  $("#stepper").style.visibility = ["review", "staging", "generate", "board"].includes(step) ? "visible" : "hidden";
+  $("#stepper").style.visibility = ["review", "references", "staging", "generate", "board"].includes(step) ? "visible" : "hidden";
   const idx = STEPS.indexOf(step);
   $$(".step").forEach(b => {
     const i = STEPS.indexOf(b.dataset.step);
@@ -168,7 +168,7 @@ function openProject(id) {
   state.current = p;
   state.shots = p.shots || demoShots();
   state.allChars = unionChars(state.shots);
-  resetUnlock(p.status === "done" ? "board" : "staging");   // finished projects open fully; others re-walk staging/generate
+  resetUnlock(p.status === "done" ? "board" : "references");   // finished projects open fully; others re-walk from references
   if (p.status === "done") { buildBoard(true); }
   else { renderShots(); go("review"); }
 }
@@ -217,7 +217,7 @@ $("#startBtn").addEventListener("click", async () => {
   state.allChars = unionChars(state.shots);
   state.current.shots = state.shots; state.current.shotCount = state.shots.length; saveProjects();
   renderShots();
-  if (state.shots.length) unlockStep("staging");  // shot list ready -> Review + Staging reachable
+  if (state.shots.length) unlockStep("references");  // shot list ready -> Review + References reachable
   play("ready");
   go("review");
 });
@@ -394,7 +394,109 @@ $("#addShotBtn").addEventListener("click", () => {
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 });
 $("#saveShots").addEventListener("click", saveNow);
-$("#toStaging").addEventListener("click", async () => { saveNow(); unlockStep("staging"); go("staging"); await renderStaging(); });
+$("#toStaging").addEventListener("click", () => { saveNow(); unlockStep("references"); go("references"); renderReferences(); });
+
+/* ============================ references (characters / locations / props) ============================ */
+// Each asset holds a GALLERY of reference images (multiple angles, all optional): upload your own
+// and/or generate, delete any. These are reused everywhere downstream (Phase 2).
+const ASSET_KINDS = [
+  { key: "characters", board: "refChars", sec: "refsecChars" },
+  { key: "locations",  board: "refLocs",  sec: "refsecLocs" },
+  { key: "props",      board: "refProps", sec: "refsecProps" },
+];
+const assetImgURL = (which, rid) => `/api/asset-image?id=${encodeURIComponent(state.current.id)}&which=${which}&rid=${rid}&t=${Date.now()}`;
+const eachAsset = fn => { const a = state.current?.assets || {}; ["characters", "locations", "props"].forEach(k => (a[k] || []).forEach(x => fn(x, k))); };
+const getAsset = which => { let r = null; eachAsset(x => { if (x.which === which) r = x; }); return r; };
+const allAssets = st => [...(st?.characters || []), ...(st?.locations || []), ...(st?.props || [])];
+function thumbHTML(which, ref, src) {
+  return `<div class="refthumb" data-rid="${ref.rid}" style="background-image:url('${src || assetImgURL(which, ref.rid)}')"><button class="refdel" title="Remove">×</button></div>`;
+}
+function assetCardHTML(kind, a) {
+  const name = a.name || a.label || a.id;
+  const sub = a.look || a.desc || (kind === "characters" ? a.gender : "");
+  const thumbs = (a.refs || []).map(r => thumbHTML(a.which, r, DEMO ? r._src : null)).join("");
+  return `<div class="refcard ${(a.refs || []).length ? "ok" : ""}" data-which="${a.which}">
+    <div class="refmeta"><b>${esc(name)}</b>${sub ? `<span>${esc(sub)}</span>` : ""}</div>
+    <div class="refstrip">
+      ${thumbs}
+      <label class="reftile up" title="Upload reference image(s) — add several angles">＋<small>Upload</small><input type="file" accept="image/*" hidden multiple></label>
+      <button class="reftile gen" title="Generate a reference">✦<small>Generate</small></button>
+    </div>
+  </div>`;
+}
+function renderReferences() {
+  if (DEMO && !state.current?.assets) state.current.assets = demoAssets();
+  const assets = state.current?.assets || { characters: [], locations: [], props: [] };
+  ASSET_KINDS.forEach(k => {
+    const list = assets[k.key] || [];
+    $("#" + k.sec)?.classList.toggle("hidden", list.length === 0);
+    const board = $("#" + k.board); if (board) board.innerHTML = list.map(a => assetCardHTML(k.key, a)).join("");
+  });
+}
+const refStripOf = card => card.querySelector(".refstrip");
+function insertThumb(card, node) { refStripOf(card).insertBefore(node, card.querySelector(".reftile.up")); card.classList.add("ok"); }
+function thumbNode(which, rid, src) {
+  const t = document.createElement("div"); t.className = "refthumb"; t.dataset.rid = rid;
+  t.style.backgroundImage = `url('${src || assetImgURL(which, rid)}')`;
+  t.innerHTML = `<button class="refdel" title="Remove">×</button>`;
+  return t;
+}
+async function genReference(which, card) {
+  const a = getAsset(which); const before = new Set((a.refs || []).map(r => r.rid));
+  const tile = document.createElement("div"); tile.className = "refthumb loading"; tile.dataset.state = "✦";
+  insertThumb(card, tile);
+  if (DEMO) {
+    await tick(1600); const rid = "d" + Math.random().toString(36).slice(2, 6), src = demoImg((a.refs || []).length + 1);
+    a.refs = [...(a.refs || []), { rid, kind: "gen", _src: src }]; tile.remove(); insertThumb(card, thumbNode(which, rid, src)); play("tick"); return;
+  }
+  await fetch("/.netlify/functions/reference-background", { method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" }, body: JSON.stringify({ id: state.current.id, which }) }).catch(() => {});
+  for (let n = 0; n < 120; n++) {
+    await tick(2500);
+    let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
+    const sa = allAssets(st.assets).find(x => x.which === which);
+    if (sa) { const fresh = (sa.refs || []).filter(r => !before.has(r.rid)); if (fresh.length) { a.refs = sa.refs; tile.remove(); fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid))); play("tick"); return; } }
+  }
+  tile.remove(); play("error");   // timed out / generation failed
+}
+async function uploadReferences(which, files, card) {
+  const a = getAsset(which);
+  for (const f of files) {
+    if (DEMO) { await new Promise(res => { const r = new FileReader(); r.onload = () => { const rid = "d" + Math.random().toString(36).slice(2, 6); a.refs = [...(a.refs || []), { rid, kind: "upload", _src: r.result }]; insertThumb(card, thumbNode(which, rid, r.result)); res(); }; r.readAsDataURL(f); }); continue; }
+    const fd = new FormData(); fd.append("id", state.current.id); fd.append("which", which); fd.append("image", f);
+    try { const res = await (await fetch("/api/set-asset", { method: "POST", headers: apiHeaders(), body: fd })).json(); if (res && res.rid) { a.refs = [...(a.refs || []), { rid: res.rid, kind: "upload" }]; insertThumb(card, thumbNode(which, res.rid)); } } catch (_) {}
+  }
+  play("tick");
+}
+async function deleteRef(which, rid, thumb) {
+  const a = getAsset(which); if (a) a.refs = (a.refs || []).filter(r => r.rid !== rid);
+  const card = thumb.closest(".refcard"); thumb.remove();
+  if (a && !(a.refs || []).length) card.classList.remove("ok");
+  if (!DEMO) await fetch("/api/set-asset", { method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" }, body: JSON.stringify({ id: state.current.id, which, rid, action: "delete" }) }).catch(() => {});
+}
+const refsWrap = $("#refsWrap");
+refsWrap.addEventListener("click", e => {
+  const card = e.target.closest(".refcard"); if (!card) return;
+  const which = card.dataset.which;
+  const del = e.target.closest(".refdel"); if (del) { const t = del.closest(".refthumb"); return deleteRef(which, t.dataset.rid, t); }
+  if (e.target.closest(".reftile.gen")) return genReference(which, card);
+  const t = e.target.closest(".refthumb");
+  if (t && !t.classList.contains("loading")) openLightbox([t.style.backgroundImage.slice(5, -2)], 0);
+});
+refsWrap.addEventListener("change", e => {
+  if (e.target.type !== "file" || !e.target.files.length) return;
+  const card = e.target.closest(".refcard"); uploadReferences(card.dataset.which, [...e.target.files], card); e.target.value = "";
+});
+$("#toStagingFromRefs").addEventListener("click", async () => { unlockStep("staging"); go("staging"); await renderStaging(); });
+function demoAssets() {
+  return {
+    characters: [
+      { name: "Carter", gender: "man", look: "late-30s, athletic build, dark hair", which: "char_carter", refs: [] },
+      { name: "Tiffany", gender: "woman", look: "30s, sharp features, blonde", which: "char_tiffany", refs: [] },
+    ],
+    locations: [{ id: "lab_floor", label: "Aerospace lab", desc: "high-tech lab floor at night", which: "loc_lab_floor", refs: [] }],
+    props: [{ name: "Phoenix turbine", desc: "a glowing jet turbine", which: "prop_phoenix_turbine", refs: [] }],
+  };
+}
 
 /* ============================ staging (edit / regenerate / upload) ============================ */
 const sp = shot => $(`.spanel[data-shot="${shot}"]`);
@@ -739,9 +841,35 @@ $("#downloadAll").addEventListener("click", async () => {
     for (let i = 0; i < pages.length; i++) {
       const data = await composeSheet(pages[i], proj, scene, i, pages.length);
       dl(data, `${proj.replace(/\s+/g, "_")}_storyboard_p${String(i + 1).padStart(2, "0")}.png`);
-      await tick(150);
+      await tick(600);   // space out so the browser doesn't block the later auto-downloads
     }
   } finally { btn.disabled = false; btn.textContent = label; }
+});
+// One-file download of every sheet as a multi-page PDF (reliable — browsers don't block a single file)
+const loadScript = src => new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+async function ensureJsPDF() {
+  if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  return window.jspdf.jsPDF;
+}
+$("#downloadPdf").addEventListener("click", async () => {
+  const pages = state.boardPages || boardPages(); if (!pages.length) return;
+  const proj = state.current?.name || "Storyboard", scene = state.current?.scene || "01";
+  const btn = $("#downloadPdf"), label = btn.textContent; btn.disabled = true; btn.textContent = "Building PDF…";
+  try {
+    const JsPDF = await ensureJsPDF();
+    let pdf;
+    for (let i = 0; i < pages.length; i++) {
+      const data = await composeSheet(pages[i], proj, scene, i, pages.length);
+      const im = await loadImg(data); if (!im) continue;
+      const w = im.width, h = im.height, orient = w > h ? "l" : "p";
+      if (!pdf) pdf = new JsPDF({ orientation: orient, unit: "px", format: [w, h] });
+      else pdf.addPage([w, h], orient);
+      pdf.addImage(data, "PNG", 0, 0, w, h);
+    }
+    if (pdf) pdf.save(`${proj.replace(/\s+/g, "_")}_storyboard.pdf`);
+  } catch (e) { play("error"); alert("Couldn't build the PDF (the PDF library failed to load). Try the PNGs button."); }
+  finally { btn.disabled = false; btn.textContent = label; }
 });
 
 /* ============================ lightbox (prev / next) ============================ */
@@ -887,6 +1015,7 @@ async function apiBreakdown(onStage) {
     if (st.status === "shots_ready") {
       if (st.scene) state.current.scene = st.scene;
       if (st.location) state.current.location = st.location;
+      if (st.assets) state.current.assets = st.assets;   // detected characters / locations / props
       return st.shots;
     }
     if (st.status === "error") { play("error"); alert(st.message || "Breakdown failed"); return []; }

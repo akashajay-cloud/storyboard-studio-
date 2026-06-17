@@ -12,6 +12,7 @@ export default async (req) => {
     stage: p.stage || null,
     message: p.statusMessage || null,
     shots: p.shots || [],
+    assets: p.assets || null,
     panelsTotal: p.panelsTotal || (p.shots || []).length,
     panelsDone: p.panelsDone || 0,
     scene: p.scene, location: p.location || "",

@@ -1,10 +1,11 @@
 // Background worker: generate ONE panel (gpt-image-2) -> QA (Claude vision) -> store in Blobs ->
 // update that shot's status on the project. Frontend dispatches one of these per shot (with a
 // concurrency limit) and polls /api/status. Communicates only via Blobs.
-// Look = a fixed photoreal full-colour cinematic frame. The only reference is this setup's STAGING
-// frame (derived shots), passed to gpt-image's edits endpoint for location/content continuity.
+// Look = a fixed photoreal full-colour cinematic frame. References passed to gpt-image's edits
+// endpoint = this setup's STAGING frame (derived shots) + the shot's CHARACTER / LOCATION / key PROP
+// reference images (Phase 2), as content/identity anchors. Capped — gpt-image juggles only a few well.
 import {
-  authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel,
+  authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel, readAssetImg,
   coreBlocking, labelInstruction, CINEMATIC_LEAD, lensFor, lightingAnchorFor,
 } from "./_lib.mjs";
 
@@ -31,24 +32,55 @@ export default async (req) => {
   try {
     await setShot({ panelStatus: "drawing", reason: null });
 
-    // ---- reference for GENERATION = this setup's STAGING frame (derived shots), for location/content
-    // ---- continuity (passed to gpt-image's edits endpoint). Staging shots themselves have no ref.
+    // ---- references for GENERATION (content/identity anchors): the setup's STAGING frame (derived) +
+    // ---- this shot's CHARACTER / LOCATION / key PROP reference images. Capped for gpt-image.
     const refs = [];
-    let stagingB64 = null;
+    let stagingB64 = null, locAdded = false;
+    const A = project.assets || {};
+    const MAX_REFS = 6;
+    const loadRefBufs = async (asset, n) => {
+      const out = [];
+      for (const r of (asset?.refs || []).slice(0, n)) {
+        if (refs.length + out.length >= MAX_REFS) break;
+        const buf = await readAssetImg(id, asset.which, r.rid);
+        if (buf) out.push(Buffer.from(buf));
+      }
+      return out;
+    };
+    // location reference leads the staging shot (it has no staging frame of its own yet)
+    if (shot.is_staging && shot.setup) {
+      const loc = (A.locations || []).find(l => l.id === shot.setup);
+      if (loc) { const b = await loadRefBufs(loc, 1); if (b.length) { refs.push(...b); locAdded = true; } }
+    }
+    // staging frame for derived shots (location + established blocking continuity)
     if (!shot.is_staging && shot.setup) {
       const stagingShot = shots.find(s => s.is_staging && s.setup === shot.setup);
-      if (stagingShot) {
-        const pbuf = await readPanel(id, stagingShot.shot);
-        if (pbuf) { const b = Buffer.from(pbuf); refs.push(b); stagingB64 = b.toString("base64"); }
-      }
+      if (stagingShot) { const pbuf = await readPanel(id, stagingShot.shot); if (pbuf) { const b = Buffer.from(pbuf); refs.push(b); stagingB64 = b.toString("base64"); } }
+    }
+    // characters present in THIS shot — one face reference each (identity anchor)
+    const shotChars = new Set([...(shot.figures || []).map(f => f && f.name), ...(shot.characters || [])].filter(Boolean));
+    const charNames = [];
+    for (const c of (A.characters || [])) {
+      if (!shotChars.has(c.name) || refs.length >= MAX_REFS) continue;
+      const b = await loadRefBufs(c, 1); if (b.length) { refs.push(...b); charNames.push(c.name); }
+    }
+    // key props mentioned in this shot's text
+    const shotText = `${shot.caption || ""} ${shot.action || ""} ${shot.image_prompt || ""}`.toLowerCase();
+    const propNames = [];
+    for (const p of (A.props || [])) {
+      if (refs.length >= MAX_REFS) break;
+      const kw = String(p.name || "").toLowerCase().split(/\s+/).find(w => w.length > 3) || String(p.name || "").toLowerCase();
+      if (kw && shotText.includes(kw)) { const b = await loadRefBufs(p, 1); if (b.length) { refs.push(...b); propNames.push(p.name); } }
     }
 
-    // ---- assemble: photoreal cinematic lead -> staging reference role -> shot size + lens (the
-    // ---- telephoto hack) -> blocking (figures by gender+position+facing, FG/MG/BG depth) -> per-setup
-    // ---- lighting anchor -> name labels -> inline "no".
-    const refLine = stagingB64
-      ? "Use the STAGING reference image to keep the SAME location, set, props, palette and the figures' established left-to-right positions; only the framing, action and expressions change for this shot. "
-      : "";
+    // ---- assemble: photoreal lead -> reference roles -> shot size + lens -> blocking -> lighting ->
+    // ---- name labels -> inline "no".
+    const refBits = [];
+    if (locAdded) refBits.push("a reference photo of the LOCATION — match the place exactly");
+    if (stagingB64) refBits.push("the wide STAGING frame of this location — keep the same place, props and the figures' established left-to-right positions");
+    if (charNames.length) refBits.push(`reference photo${charNames.length > 1 ? "s" : ""} of ${charNames.join(" and ")} — keep each person's face, hair and clothing consistent with their reference`);
+    if (propNames.length) refBits.push(`reference photos of ${propNames.join(", ")} — keep these objects consistent`);
+    const refLine = refBits.length ? `You are given reference images: ${refBits.join("; ")}. Match them so the people, place and objects stay consistent across shots. ` : "";
     const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
     const anchor = lightingAnchorFor(shots, shot);                 // one lighting anchor per setup
     const labels = labelInstruction(shot.figures, shot.characters, project.styles);

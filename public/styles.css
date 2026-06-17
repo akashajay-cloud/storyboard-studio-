@@ -459,6 +459,26 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
 .su-target-wrap { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted-foreground); }
 .su-target-wrap select { background: var(--popover); border: 1px solid var(--border); color: var(--foreground); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; }
 
+/* references screen: each asset card holds a GALLERY of reference images (multiple angles) */
+.refsection { margin-bottom: 26px; }
+.refsection.hidden { display: none; }
+.refhead { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-foreground); margin: 0 0 12px; font-weight: 600; }
+.refgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(264px, 1fr)); gap: 14px; }
+.refcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.refcard.ok { border-color: oklch(0.6 0.1 150 / 0.45); }
+.refmeta { display: flex; flex-direction: column; gap: 2px; }
+.refmeta b { font-size: 13px; color: var(--foreground); }
+.refmeta span { font-size: 11.5px; color: var(--muted-foreground); line-height: 1.35; }
+.refstrip { display: flex; flex-wrap: wrap; gap: 8px; }
+.refthumb { position: relative; width: 76px; height: 76px; border-radius: 8px; background: #0a0a0a center/cover no-repeat; border: 1px solid var(--border); cursor: zoom-in; }
+.refthumb.loading { background: repeating-linear-gradient(45deg, oklch(0.215 0.007 60), oklch(0.215 0.007 60) 10px, oklch(0.235 0.007 60) 10px, oklch(0.235 0.007 60) 20px); animation: pulseload 1.15s ease-in-out infinite; cursor: default; display: grid; place-items: center; color: var(--muted-foreground); }
+.refthumb.loading::after { content: attr(data-state); }
+.refdel { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: oklch(0 0 0 / 0.62); color: #fff; font-size: 13px; line-height: 1; cursor: pointer; display: none; }
+.refthumb:hover .refdel { display: block; }
+.reftile { width: 76px; height: 76px; border-radius: 8px; border: 1.5px dashed var(--border); background: var(--secondary); color: var(--muted-foreground); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 17px; }
+.reftile small { font-size: 10px; }
+.reftile:hover { border-color: var(--primary); color: var(--foreground); }
+
 /* generate screen: section headers separating staging frames from the actual shots */
 .genGroup { grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--muted-foreground); padding: 16px 2px 4px; border-top: 1px solid var(--border); }
