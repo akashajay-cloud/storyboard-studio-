@@ -1,11 +1,11 @@
 // Background worker: generate ONE panel (gpt-image-2) -> QA (Claude vision) -> store in Blobs ->
 // update that shot's status on the project. Frontend dispatches one of these per shot (with a
 // concurrency limit) and polls /api/status. Communicates only via Blobs.
-// References: the project's chosen STYLE anchor (every panel) + this setup's STAGING frame (derived
-// shots), passed to gpt-image-2's edits endpoint AND to QA. The prompt then carries only the delta.
+// Look = a fixed photoreal full-colour cinematic frame. The only reference is this setup's STAGING
+// frame (derived shots), passed to gpt-image's edits endpoint for location/content continuity.
 import {
   authed, getProject, putProject, generateImageB64, qaPanel, savePanel, readPanel,
-  readStyleImg, coreBlocking, labelInstruction, styleClauseFor, lensFor, lightingAnchorFor,
+  coreBlocking, labelInstruction, CINEMATIC_LEAD, lensFor, lightingAnchorFor,
 } from "./_lib.mjs";
 
 export default async (req) => {
@@ -31,13 +31,10 @@ export default async (req) => {
   try {
     await setShot({ panelStatus: "drawing", reason: null });
 
-    // ---- assemble references: style anchor (all panels) + this setup's staging frame (derived) ----
+    // ---- reference for GENERATION = this setup's STAGING frame (derived shots), for location/content
+    // ---- continuity (passed to gpt-image's edits endpoint). Staging shots themselves have no ref.
     const refs = [];
-    let styleB64 = null, stagingB64 = null;
-    if (project.styleRef) {
-      const sbuf = await readStyleImg(id, "ref");
-      if (sbuf) { const b = Buffer.from(sbuf); refs.push(b); styleB64 = b.toString("base64"); }
-    }
+    let stagingB64 = null;
     if (!shot.is_staging && shot.setup) {
       const stagingShot = shots.find(s => s.is_staging && s.setup === shot.setup);
       if (stagingShot) {
@@ -46,29 +43,22 @@ export default async (req) => {
       }
     }
 
-    // ---- assemble in cinematographer order: references -> shot size -> blocking (angle / figures by
-    // ---- gender+position+facing / expression / FG-MG-BG depth) -> lighting anchor -> lens -> style
-    // ---- -> name labels -> inline "no". Figures are described by gender+position; NAMES only label.
-    const refLine = (styleB64 && stagingB64)
-      ? "Two reference images. Reference 1 = STYLE: match its drawing medium, linework and finish EXACTLY, but ignore its subject and composition. Reference 2 = STAGING: keep the SAME location, props and the figures' established left-to-right positions. "
-      : styleB64
-      ? "Reference image = STYLE: match its drawing medium, linework and finish EXACTLY, but ignore its subject. "
+    // ---- assemble: photoreal cinematic lead -> staging reference role -> shot size + lens (the
+    // ---- telephoto hack) -> blocking (figures by gender+position+facing, FG/MG/BG depth) -> per-setup
+    // ---- lighting anchor -> name labels -> inline "no".
+    const refLine = stagingB64
+      ? "Use the STAGING reference image to keep the SAME location, set, props, palette and the figures' established left-to-right positions; only the framing, action and expressions change for this shot. "
       : "";
     const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
     const anchor = lightingAnchorFor(shots, shot);                 // one lighting anchor per setup
-    const styleText = styleClauseFor(project.styleChoice);         // explicit words for the SELECTED style
-    const styleDirective = styleText
-      ? " Style: " + styleText
-      : (styleB64 ? " Match the style reference's medium and finish exactly." : "");
     const labels = labelInstruction(shot.figures, shot.characters, project.styles);
-    const tail = " No text or captions other than the character name labels; no panel borders, frames or UI.";
+    const tail = " No captions, borders, panel frames, watermarks or UI — only the small character name labels described above.";
 
     let prompt = promptOverride
-      ? refLine + promptOverride + styleDirective + labels + tail
-      : refLine + `${shot.type}. ` + blocking
-        + (anchor ? " Lighting: " + anchor : "")
-        + " " + lensFor(shot.type) + "."
-        + styleDirective + labels + tail;
+      ? CINEMATIC_LEAD + " " + refLine + promptOverride + labels + tail
+      : CINEMATIC_LEAD + " " + refLine + `${shot.type}, ${lensFor(shot.type)}. ` + blocking
+        + (anchor ? " Lighting: " + anchor.replace(/\s*\.?\s*$/, "") + "." : "")
+        + labels + tail;
     if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;
 
     let b64 = await generateImageB64(prompt, refs);
@@ -77,11 +67,11 @@ export default async (req) => {
     if (qa) {
       try {
         await setShot({ panelStatus: "qa" });
-        const r = await qaPanel(b64, shot, { styleB64, stagingB64 });
+        const r = await qaPanel(b64, shot, { stagingB64 });
         if (!r.pass) {
-          // one corrective regeneration using the QA fix (keep the same references)
+          // one corrective regeneration using the QA fix (keep the same reference)
           if (r.fix) { try { b64 = await generateImageB64(prompt + " CORRECTION: " + r.fix, refs); } catch (_) {} }
-          const r2 = await qaPanel(b64, shot, { styleB64, stagingB64 }).catch(() => ({ pass: true }));
+          const r2 = await qaPanel(b64, shot, { stagingB64 }).catch(() => ({ pass: true }));
           if (!r2.pass) { status = "flagged"; reason = (r2.issues || r.issues || []).join("; ") || "QA flagged"; }
         }
       } catch (_) { /* QA inconclusive -> keep the image, mark approved */ }

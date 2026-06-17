@@ -27,10 +27,9 @@
     <nav class="stepper" id="stepper">
       <button class="step" data-step="upload"><i>1</i>Script</button>
       <button class="step" data-step="review"><i>2</i>Shotlist</button>
-      <button class="step" data-step="style"><i>3</i>Style</button>
-      <button class="step" data-step="staging"><i>4</i>Staging</button>
-      <button class="step" data-step="generate"><i>5</i>Generate</button>
-      <button class="step" data-step="board"><i>6</i>Storyboard</button>
+      <button class="step" data-step="staging"><i>3</i>Staging</button>
+      <button class="step" data-step="generate"><i>4</i>Generate</button>
+      <button class="step" data-step="board"><i>5</i>Storyboard</button>
     </nav>
 
     <div class="topbar-right">
@@ -152,21 +151,9 @@
         <span class="muted" id="saveState">All changes saved.</span>
         <div class="head-actions">
           <button class="btn" id="saveShots">Save</button>
-          <button class="btn primary" id="toStaging">Confirm → Style</button>
+          <button class="btn primary" id="toStaging">Confirm → Staging</button>
         </div>
       </div>
-    </section>
-
-    <!-- STEP 2b — STYLE (pick the look for this project) -->
-    <section class="screen" data-screen="style">
-      <div class="screen-head">
-        <div><h2>Choose a panel style</h2><p class="muted">Pick the look for this project — every panel is drawn to match it. Or upload your own reference frame.</p></div>
-        <div class="head-actions">
-          <button class="btn" data-goto="review">← Shotlist</button>
-          <button class="btn primary" id="useStyleBtn" disabled>Use this style → Staging</button>
-        </div>
-      </div>
-      <div class="stylegrid" id="styleBoard"></div>
     </section>
 
     <!-- STEP 3 — STAGING -->

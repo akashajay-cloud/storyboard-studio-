@@ -5,19 +5,6 @@ import { getStore } from "@netlify/blobs";
 export const MODEL = "claude-sonnet-4-6";
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
-// ---- house style (verbatim from the CLI's style.py) ----
-export const STYLE_CLAUSE =
-  "Rough black-and-white gestural storyboard BLOCKING SKETCH only - loose, quick, unfinished " +
-  "pencil construction lines like a fast pre-production thumbnail. Faceless generic figures " +
-  "with plain oval heads and NO facial features (a rough expression is allowed only in a " +
-  "close-up), NO hair detail, NO detailed or textured clothing, NO shading, NO cross-hatching, " +
-  "NO grayscale rendering, NO realism, NO finished-illustration look. Show gender through body " +
-  "proportions only. Minimal line-art background on plain white. The ONLY colour anywhere in " +
-  "the image is each character's full-name text label written next to their figure in that " +
-  "character's assigned colour; every line of the drawing itself is plain black on white. The " +
-  "image must contain ONLY the illustrated scene filling the frame - no text except the " +
-  "character name labels, and no captions, borders, panel frames, UI elements, or storyboard " +
-  "template layout.";
 
 // ---- breakdown system prompt: composes each shot like a cinematographer ----
 export const BREAKDOWN_PROMPT = `You are a professional storyboard artist and cinematographer working on micro-drama (short-form vertical/landscape drama) productions. Break the script into a numbered sequence of storyboard shots, each COMPOSED like a real cinematographer (shot size, angle, depth, lighting continuity, the 180-degree rule).
@@ -132,30 +119,12 @@ export const IMAGE_MODEL = "gpt-image-2";
 export const IMAGE_SIZE = "1024x1536"; // 9:16 portrait
 export const IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits";
 
-// ---- per-project style anchor: 3 candidate swatches the user picks from (or replaces by upload) ----
-// Rendered text-only (these bootstrap the look); the chosen one becomes the STYLE reference fed into
-// every panel. Subject is deliberately neutral so its CONTENT never bleeds into real scenes.
-const STYLE_SUBJECT =
-  "A neutral style swatch for a storyboard: two simple blocking figures (one reading male, one " +
-  "female by body proportion only) standing a little apart on plain white, each with a short " +
-  "example full-name label - 'ALEX' in red beside one figure, 'SAM' in blue beside the other. No " +
-  "background, no props - this image is ONLY a sample of the drawing STYLE.";
-export const STYLE_CANDIDATES = [
-  { id: "sketch", name: "Rough storyboard sketch",
-    clause: "Draw it as a loose, rough black-and-white pre-production storyboard sketch: quick gestural " +
-      "pencil construction lines, faceless figures with plain oval heads, NO shading, NO rendering - a fast thumbnail." },
-  { id: "ink", name: "Clean comic line-art",
-    clause: "Draw it as clean black ink line-art: confident even contour lines, flat, NO shading or hatching, " +
-      "faceless figures with simple oval heads, crisp comic-panel clarity on white." },
-  { id: "grayscale", name: "Cinematic grayscale concept",
-    clause: "Draw it as a moody cinematic grayscale concept sketch: soft graphite shading and tonal depth, " +
-      "gentle directional lighting, figures still loosely blocked with no detailed faces, atmospheric but monochrome." },
-];
-export const styleCandidatePrompt = (c) =>
-  `${STYLE_SUBJECT} ${c.clause} The ONLY colour anywhere is the two name labels; every drawn line is otherwise black on white.`;
-// The explicit words for a chosen preset style ("" for uploads/unknown) — fed into every panel so the
-// model is TOLD the look, not left to infer it from the reference image alone (which it under-uses).
-export const styleClauseFor = (choice) => (STYLE_CANDIDATES.find((c) => c.id === choice)?.clause) || "";
+// The look is a fixed, photoreal full-colour cinematic frame (the style-picker feature was removed —
+// gpt-image's native strength is photorealism, so we lean into it). This leads EVERY panel prompt.
+export const CINEMATIC_LEAD =
+  "A photorealistic, full-colour cinematic film still — realistic natural lighting, real human " +
+  "figures with believable faces and clothing, real materials and textures, filmic colour, shallow " +
+  "cinematic depth, as if a frame grabbed from a finished film.";
 
 // Appended on a content-moderation block (clothes the faceless figures so they don't read as nude).
 export const SOFTEN_CLAUSE =
@@ -217,25 +186,23 @@ export async function generateImageB64(prompt, refs = []) {
 }
 
 // ===================== QA (Claude vision) =====================
-// The panel is graded against the shot card and, when present, a STYLE reference and a STAGING
-// reference (the action/caption are the source of truth for intent, not the prompt).
-export const QA_PROMPT = `You are a storyboard QA reviewer. You are shown a generated panel image and its shot card, and SOMETIMES a STYLE reference image and/or a STAGING reference image (the wide frame of this location). Return ONLY a JSON object: {"pass": boolean, "issues": [string], "fix": string}.
+// The panel is graded against the shot card and, when present, a STAGING reference for continuity.
+// There is NO style check — the look is a fixed photoreal cinematic frame. (action/caption are the
+// source of truth for intent, not the prompt.)
+export const QA_PROMPT = `You are a storyboard QA reviewer. You are shown a generated panel image (a photorealistic cinematic frame) and its shot card, and SOMETIMES a STAGING reference image (the wide frame of this location). Return ONLY a JSON object: {"pass": boolean, "issues": [string], "fix": string}.
 Checks (any failure => pass=false):
-1. CHARACTERS: every character in the card is present; correct FULL-NAME labels in their assigned colours.
+1. CHARACTERS: every character named in the card is present, and each has a small readable name label in their assigned colour.
 2. POSITIONS & FACING: left/right/depth and who-faces/approaches-whom match the action/caption intent (a figure walking toward the camera when they should engage others in-frame is a FAIL).
 3. ACTION & FRAMING: the pose/action and shot type (close-up vs wide etc.) match the card.
-4. STYLE: assess style ONLY if a STYLE reference image is provided — then the panel must match ITS drawing medium and level of finish (e.g. flat clean linework vs. soft grayscale shading). If NO style reference is provided, SKIP the style check entirely — do NOT assume any particular style and do NOT flag for shading/finish. The only colour anywhere should be the character name labels.
-5. CONTINUITY (apply ONLY when a STAGING reference is provided): the panel must share the SAME location and key props, and keep the characters' left-to-right order consistent with the staging frame (someone left of another in staging must not appear right of them here unless it is a deliberate reverse angle). Skip this check entirely if no staging reference is given.
+4. CONTINUITY (apply ONLY when a STAGING reference is provided): the panel shares the SAME location and key props, and keeps the characters' left-to-right order consistent with the staging frame (someone left of another in staging must not appear right of them here unless it is a deliberate reverse angle). Skip this check entirely if no staging reference is given.
+Do NOT judge art style or "realism" — the photoreal look is intended.
 "issues": short specific problems naming the check (empty if pass). "fix": one concrete correction to append to the prompt on regeneration (empty if pass).`;
 
 function extractText(r) { return (r.content || []).map(b => b.text || "").join("").trim(); }
 
-// refs = { styleB64, stagingB64 } — either/both optional.
+// refs = { stagingB64 } — optional staging frame for the continuity check.
 export async function qaPanel(imageB64, shot, refs = {}) {
   const content = [{ type: "image", source: { type: "base64", media_type: "image/png", data: imageB64 } }];
-  if (refs.styleB64) content.push(
-    { type: "text", text: "STYLE reference (match this drawing style/medium only, ignore its subject):" },
-    { type: "image", source: { type: "base64", media_type: "image/png", data: refs.styleB64 } });
   if (refs.stagingB64) content.push(
     { type: "text", text: "STAGING reference (same location, props and character left-to-right order):" },
     { type: "image", source: { type: "base64", media_type: "image/png", data: refs.stagingB64 } });
@@ -261,55 +228,41 @@ export async function readPanel(id, shot) {
   return panelStore().get(panelKey(id, shot), { type: "arrayBuffer" });
 }
 
-// ===================== style image storage (Netlify Blobs) =====================
-// which: "cand_sketch" | "cand_ink" | "cand_grayscale" (the 3 candidates) or "ref" (the chosen one).
-export const styleStore = () => getStore("styles");
-export async function saveStyleImg(id, which, b64) {
-  await styleStore().set(`${id}/${which}`, Buffer.from(b64, "base64"), { metadata: { contentType: "image/png" } });
-}
-export async function readStyleImg(id, which) {
-  return styleStore().get(`${id}/${which}`, { type: "arrayBuffer" });
-}
-
-// ===================== slim, reference-aware prompt helpers =====================
-// With a style ref + staging ref carrying the look and the location, the per-shot prompt should
-// only state the delta. These strip the auto-appended style/label text and rebuild the labels.
+// ===================== prompt helpers =====================
+// image_prompt now holds clean cinematic blocking; this just tidies any legacy text from old shots.
 export function coreBlocking(imagePrompt) {
-  let t = String(imagePrompt || "");
-  t = t.split("Character name-label colors for this panel:")[0]; // drop applyCharacterStyling's appended sentence
-  t = t.split(STYLE_CLAUSE).join(" ");                            // drop any inlined house-style clause
-  return t.replace(/\s+/g, " ").trim();
+  return String(imagePrompt || "").split("Character name-label colors for this panel:")[0].replace(/\s+/g, " ").trim();
 }
-// Builds the label instruction tied to the right FIGURE (by gender + position), so a NAME is only
-// ever used as drawn label text — never as the figure's identity. Reconciles with `characters`
-// (which the user can edit in review): drops labels for removed characters, adds any extras.
+// Name labels overlaid on the photoreal frame, tied to the right FIGURE (by gender + position) so a
+// NAME is only ever drawn label text — never the figure's identity. Reconciles with `characters`
+// (editable in review): drops labels for removed characters, adds any extras.
 export function labelInstruction(figures, characters, styles) {
   const map = styles || {};
   const names = (characters || []).filter(Boolean).map(String);
   const figs = (Array.isArray(figures) ? figures : []).filter(f => f && f.name && (!names.length || names.includes(String(f.name))));
   const parts = figs.map(f => {
     const who = [f.gender, f.pos && ("on the " + String(f.pos))].filter(Boolean).join(" ") || "figure";
-    return `label the ${who} '${String(f.name).toUpperCase()}' in ${map[f.name] || "a distinct colour"}`;
+    return `a small ${map[f.name] || "coloured"} text label reading '${String(f.name).toUpperCase()}' beside the ${who}`;
   });
   const covered = new Set(figs.map(f => String(f.name)));
-  for (const c of names) if (!covered.has(c)) parts.push(`label '${c.toUpperCase()}' in ${map[c] || "a distinct colour"}`);
+  for (const c of names) if (!covered.has(c)) parts.push(`a small ${map[c] || "coloured"} text label reading '${c.toUpperCase()}'`);
   if (!parts.length) return "";
-  return ` Name labels are the ONLY colour in the frame (every other line follows the style reference): ${parts.join("; ")}.`;
+  return ` Overlay ${parts.join("; ")} — clean readable labels that do not cover faces.`;
 }
 
-// Maps a shot SIZE to a real lens + aperture (the "telephoto hack" — without this gpt-image defaults
-// to a ~35mm wide look that distorts faces and over-sharpens backgrounds).
+// Maps a shot SIZE to a real lens + aperture — the cinematographer's "telephoto hack". For photoreal
+// frames this is exactly right: 85mm+ flatters faces and throws the background into creamy bokeh.
 export function lensFor(type) {
   const t = String(type || "").toUpperCase();
-  if (/EXTREME CLOSE|\bECU\b/.test(t)) return "Shot on a 100mm lens, f/1.8, ultra-shallow depth of field, only the subject sharp";
-  if (/MEDIUM CLOSE|\bMCU\b/.test(t)) return "Shot on an 85mm portrait lens, f/2.8, shallow depth of field, background softly blurred";
-  if (/CLOSE|\bCU\b|REACTION/.test(t)) return "Shot on an 85mm portrait lens, f/2.8, shallow depth of field, background softly blurred";
-  if (/INSERT|DETAIL|CUTAWAY/.test(t)) return "Shot on a 100mm macro lens, f/4, close focus on the detail, background soft";
-  if (/ESTABLISH|EXTREME WIDE|\bEWS\b/.test(t)) return "Shot on a 24mm wide-angle lens, deep focus, f/8, everything sharp";
-  if (/OVER-THE-SHOULDER|OVER THE SHOULDER|\bOTS\b/.test(t)) return "Shot on an 85mm lens, f/2.8, foreground shoulder soft, subject sharp";
-  if (/MEDIUM|TWO-SHOT|TWO SHOT|\bMS\b/.test(t)) return "Shot on a 50mm lens, f/2.8, shallow depth of field";
-  if (/WIDE|FULL|TRACKING|DYNAMIC|\bPOV\b|\bWS\b|\bFS\b/.test(t)) return "Shot on a 35mm lens, f/5.6, moderate depth of field";
-  return "Shot on a 50mm lens, f/2.8";
+  if (/EXTREME CLOSE|\bECU\b/.test(t)) return "shot on a 100mm lens at f/1.8, ultra-shallow focus, only the eyes sharp";
+  if (/MEDIUM CLOSE|\bMCU\b/.test(t)) return "shot on an 85mm portrait lens at f/2.8, shallow depth of field, background softly blurred";
+  if (/CLOSE|\bCU\b|REACTION/.test(t)) return "shot on an 85mm portrait lens at f/2, shallow depth of field, creamy background bokeh, tack-sharp eyes";
+  if (/INSERT|DETAIL|CUTAWAY/.test(t)) return "shot on a 100mm macro lens at f/4, tight on the detail, background melted into bokeh";
+  if (/ESTABLISH|EXTREME WIDE|\bEWS\b/.test(t)) return "shot on a 24mm wide-angle lens, deep focus at f/8, the whole space sharp";
+  if (/OVER-THE-SHOULDER|OVER THE SHOULDER|\bOTS\b/.test(t)) return "shot on an 85mm lens at f/2.8, the foreground shoulder soft, the facing figure sharp";
+  if (/MEDIUM|TWO-SHOT|TWO SHOT|\bMS\b/.test(t)) return "shot on a 50mm lens at f/2.8, natural perspective, gentle background separation";
+  if (/WIDE|FULL|TRACKING|DYNAMIC|\bPOV\b|\bWS\b|\bFS\b/.test(t)) return "shot on a 35mm lens at f/5.6, the figures full-length within the space";
+  return "shot on a 50mm lens at f/2.8";
 }
 
 // One lighting anchor per setup (the setup's staging shot's mood), reused verbatim for continuity.

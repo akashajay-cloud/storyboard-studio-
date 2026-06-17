@@ -2,7 +2,7 @@
 // screen is fully clickable; on Netlify it calls /api/* instead.
 
 const DEMO = location.protocol === "file:" || location.hostname === "localhost";
-const STEPS = ["upload", "analyzing", "review", "style", "staging", "generate", "board"];
+const STEPS = ["upload", "analyzing", "review", "staging", "generate", "board"];
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -164,7 +164,7 @@ function openProject(id) {
   state.current = p;
   state.shots = p.shots || demoShots();
   state.allChars = unionChars(state.shots);
-  resetUnlock(p.status === "done" ? "board" : "style");   // finished projects open fully; others re-walk staging/generate
+  resetUnlock(p.status === "done" ? "board" : "staging");   // finished projects open fully; others re-walk staging/generate
   if (p.status === "done") { buildBoard(true); }
   else { renderShots(); go("review"); }
 }
@@ -211,7 +211,7 @@ $("#startBtn").addEventListener("click", async () => {
   state.allChars = unionChars(state.shots);
   state.current.shots = state.shots; state.current.shotCount = state.shots.length; saveProjects();
   renderShots();
-  if (state.shots.length) unlockStep("style");  // shot list ready -> Review + Style reachable
+  if (state.shots.length) unlockStep("staging");  // shot list ready -> Review + Staging reachable
   play("ready");
   go("review");
 });
@@ -388,78 +388,7 @@ $("#addShotBtn").addEventListener("click", () => {
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 });
 $("#saveShots").addEventListener("click", saveNow);
-$("#toStaging").addEventListener("click", async () => { saveNow(); go("style"); await renderStyle(); });
-
-/* ============================ style picker (3 candidates / upload-your-own) ============================ */
-// The chosen style image becomes THE style reference for this project, fed into every panel.
-const STYLE_OPTS = [
-  { id: "sketch",    name: "Rough storyboard sketch",   desc: "Loose gestural pencil blocking — a fast, unfinished thumbnail." },
-  { id: "ink",       name: "Clean comic line-art",      desc: "Confident flat black ink linework — crisp and clear." },
-  { id: "grayscale", name: "Cinematic grayscale concept", desc: "Moody graphite tone with soft shading and depth." },
-];
-// Premade style swatches ship as static assets at /public/styles/<id>.png — shown INSTANTLY, no
-// per-project generation and no image-API cost. (DEMO uses the same relative path.)
-const styleAsset = id => `styles/${id}.png`;
-function styleCardHTML(o) {
-  return `<div class="stylecard" data-style="${o.id}">
-    <div class="stimg" style="background-image:url('${styleAsset(o.id)}')"></div>
-    <div class="stmeta"><b>${esc(o.name)}</b><span>${esc(o.desc)}</span></div>
-    <button class="stpick">Select</button>
-  </div>`;
-}
-function styleUploadHTML() {
-  return `<div class="stylecard upload" data-style="upload">
-    <label class="stimg empty up"><span>⬆<br>Upload your own<br><small>PNG or JPG style frame</small></span>
-      <input type="file" accept="image/*" hidden id="styleUpload"></label>
-    <div class="stmeta"><b>Your own reference</b><span>Use a style frame you already have.</span></div>
-  </div>`;
-}
-function renderStyle() {
-  state.styleChoice = null; state._styleFile = null;
-  $("#useStyleBtn").disabled = true;
-  $("#styleBoard").innerHTML = STYLE_OPTS.map(styleCardHTML).join("") + styleUploadHTML();
-}
-const styleBoard = $("#styleBoard");
-function selectStyle(card) {
-  $$("#styleBoard .stylecard").forEach(c => c.classList.remove("selected"));
-  card.classList.add("selected");
-  state.styleChoice = card.dataset.style;
-  $("#useStyleBtn").disabled = false;
-}
-styleBoard.addEventListener("click", e => {
-  const card = e.target.closest(".stylecard"); if (!card) return;
-  if (card.dataset.style === "upload") return;          // selection happens on file change
-  const img = card.querySelector(".stimg");
-  if (e.target.closest(".stpick") || e.target === img) selectStyle(card);
-});
-styleBoard.addEventListener("change", e => {
-  if (e.target.id !== "styleUpload" || !e.target.files[0]) return;
-  const card = e.target.closest(".stylecard"), f = e.target.files[0];
-  const r = new FileReader();
-  r.onload = () => {
-    const el = card.querySelector(".stimg");
-    el.classList.remove("empty", "up"); el.innerHTML = ""; el.style.backgroundImage = `url('${r.result}')`;
-    state._styleFile = f; selectStyle(card);
-  };
-  r.readAsDataURL(f);
-});
-$("#useStyleBtn").addEventListener("click", async () => {
-  if (!state.styleChoice) return;
-  if (!DEMO) {
-    if (state.styleChoice === "upload" && state._styleFile) {
-      const fd = new FormData(); fd.append("id", state.current.id); fd.append("style", state._styleFile);
-      await fetch("/api/set-style", { method: "POST", headers: apiHeaders(), body: fd }).catch(() => {});
-    } else {
-      await fetch("/api/set-style", {
-        method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
-        body: JSON.stringify({ id: state.current.id, choice: state.styleChoice }),
-      }).catch(() => {});
-    }
-  }
-  if (state.current) { state.current.styleChoice = state.styleChoice; saveProjects(); }
-  unlockStep("staging");
-  go("staging"); await renderStaging();
-});
+$("#toStaging").addEventListener("click", async () => { saveNow(); unlockStep("staging"); go("staging"); await renderStaging(); });
 
 /* ============================ staging (edit / regenerate / upload) ============================ */
 const sp = shot => $(`.spanel[data-shot="${shot}"]`);
