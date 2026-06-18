@@ -480,6 +480,28 @@ main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; paddin
 .reftile small { font-size: 10px; }
 .reftile:hover { border-color: var(--primary); color: var(--foreground); }
 
+/* ---- panel ref strip: small thumbnails showing which references were fed to the image model ---- */
+.panel-refs {
+  display: flex; align-items: center; gap: 5px; padding: 7px 10px 5px;
+  border-bottom: 1px solid var(--border); background: oklch(0.19 0.006 60 / 0.6);
+  flex-wrap: wrap; cursor: pointer;
+}
+.panel-refs:hover { background: var(--secondary); }
+.pref-thumb {
+  width: 32px; height: 32px; border-radius: 5px; border: 1px solid var(--border);
+  background: #111 center/cover no-repeat; position: relative; flex-shrink: 0;
+  display: flex; align-items: flex-end; justify-content: flex-start;
+}
+.pref-role {
+  font-size: 8px; line-height: 1; padding: 1px 2px; border-radius: 3px 0 0 0;
+  background: oklch(0 0 0 / 0.6); pointer-events: none;
+}
+.pref-edit {
+  margin-left: auto; background: transparent; border: 0; color: var(--muted-foreground);
+  font: inherit; font-size: 10.5px; cursor: pointer; padding: 2px 4px; white-space: nowrap;
+}
+.pref-edit:hover { color: var(--primary); }
+
 /* generate screen: section headers separating staging frames from the actual shots */
 .genGroup { grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--muted-foreground); padding: 16px 2px 4px; border-top: 1px solid var(--border); }

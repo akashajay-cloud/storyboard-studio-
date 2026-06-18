@@ -73,12 +73,41 @@ export default async (req) => {
       if (kw && shotText.includes(kw)) { const b = await loadRefBufs(p, 1); if (b.length) { refs.push(...b); propNames.push(p.name); } }
     }
 
+    // Build usedRefs list for the frontend to display as thumbnails on each panel card.
+    // { which, rid, role, label } — role is "location" | "staging" | "character" | "prop"
+    const usedRefs = [];
+    if (locAdded) {
+      const loc = (A.locations || []).find(l => l.id === shot.setup);
+      if (loc && (loc.refs || []).length) usedRefs.push({ which: loc.which, rid: loc.refs[0].rid, role: "location", label: loc.label || loc.id });
+    }
+    if (stagingB64) {
+      const stagingShot = shots.find(s => s.is_staging && s.setup === shot.setup);
+      if (stagingShot) usedRefs.push({ which: "staging", rid: String(stagingShot.shot), role: "staging", label: "Staging frame" });
+    }
+    for (const name of charNames) {
+      const c = (A.characters || []).find(x => x.name === name);
+      if (c && (c.refs || []).length) usedRefs.push({ which: c.which, rid: c.refs[0].rid, role: "character", label: name });
+    }
+    for (const name of propNames) {
+      const p = (A.props || []).find(x => x.name === name);
+      if (p && (p.refs || []).length) usedRefs.push({ which: p.which, rid: p.refs[0].rid, role: "prop", label: name });
+    }
+
     // ---- assemble: photoreal lead -> reference roles -> shot size + lens -> blocking -> lighting ->
     // ---- name labels -> inline "no".
     const refBits = [];
     if (locAdded) refBits.push("a reference photo of the LOCATION — match the place exactly");
     if (stagingB64) refBits.push("the wide STAGING frame of this location — keep the same place, props and the figures' established left-to-right positions");
-    if (charNames.length) refBits.push(`reference photo${charNames.length > 1 ? "s" : ""} of ${charNames.join(" and ")} — keep each person's face, hair and clothing consistent with their reference`);
+    // Per-character appearance override: when a ref photo exists, the model must use the photo for
+    // face AND clothing, ignoring any text description of that character's look.
+    if (charNames.length) {
+      refBits.push(
+        `reference photo${charNames.length > 1 ? "s" : ""} of ${charNames.join(" and ")} — ` +
+        `for each person USE THE REFERENCE PHOTO to determine their exact face, hair, skin tone, ` +
+        `and ALL clothing/outfit details. Do NOT infer or add any clothing not clearly visible in ` +
+        `the reference; their appearance in the generated image must match the photo exactly.`
+      );
+    }
     if (propNames.length) refBits.push(`reference photos of ${propNames.join(", ")} — keep these objects consistent`);
     const refLine = refBits.length ? `You are given reference images: ${refBits.join("; ")}. Match them so the people, place and objects stay consistent across shots. ` : "";
     const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
@@ -110,7 +139,7 @@ export default async (req) => {
     }
 
     await savePanel(id, shotNum, b64);
-    await setShot({ panelStatus: status, reason, hasImage: true });
+    await setShot({ panelStatus: status, reason, hasImage: true, usedRefs });
   } catch (e) {
     await setShot({ panelStatus: "error", reason: String(e).slice(0, 240) });
   }

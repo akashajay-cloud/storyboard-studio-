@@ -397,6 +397,60 @@ $("#saveShots").addEventListener("click", saveNow);
 $("#toStaging").addEventListener("click", () => { saveNow(); unlockStep("references"); go("references"); renderReferences(); });
 
 /* ============================ references (characters / locations / props) ============================ */
+// ---- panel ref strip: compute expected refs from state.assets (shown before/during generation) ----
+function refsForShot(s) {
+  const A = state.current?.assets || {};
+  const shots = state.shots || [];
+  const items = [];
+  if (s.is_staging) {
+    const loc = (A.locations || []).find(l => l.id === s.setup);
+    if (loc && (loc.refs || []).length)
+      items.push({ role: "location", label: loc.label || loc.id, imgUrl: DEMO ? loc.refs[0]._src : assetImgURL(loc.which, loc.refs[0].rid) });
+  } else {
+    const stShot = shots.find(x => x.is_staging && x.setup === s.setup);
+    if (stShot) items.push({ role: "staging", label: "Staging frame", imgUrl: DEMO ? demoImg(stShot.shot) : panelURL(stShot.shot) });
+  }
+  const shotChars = new Set([...(s.figures || []).map(f => f && f.name), ...(s.characters || [])].filter(Boolean));
+  for (const c of (A.characters || [])) {
+    if (!shotChars.has(c.name) || !(c.refs || []).length) continue;
+    items.push({ role: "character", label: c.name, imgUrl: DEMO ? c.refs[0]._src : assetImgURL(c.which, c.refs[0].rid) });
+  }
+  const text = `${s.caption || ""} ${s.action || ""} ${s.image_prompt || ""}`.toLowerCase();
+  for (const p of (A.props || [])) {
+    if (!(p.refs || []).length) continue;
+    const kw = String(p.name || "").toLowerCase().split(/\s+/).find(w => w.length > 3) || String(p.name || "").toLowerCase();
+    if (kw && text.includes(kw)) items.push({ role: "prop", label: p.name, imgUrl: DEMO ? p.refs[0]._src : assetImgURL(p.which, p.refs[0].rid) });
+  }
+  return items;
+}
+function usedRefsForShot(s) {
+  if (!s.usedRefs?.length) return [];
+  return s.usedRefs.map(r => ({
+    role: r.role, label: r.label,
+    imgUrl: r.role === "staging" ? panelURL(+r.rid) : assetImgURL(r.which, r.rid),
+  }));
+}
+function panelRefsHTML(s) {
+  const items = usedRefsForShot(s).length ? usedRefsForShot(s) : refsForShot(s);
+  if (!items.length) return "";
+  const roleIcon = { character: "👤", location: "🏠", staging: "🎬", prop: "📦" };
+  const thumbs = items.map(it =>
+    `<div class="pref-thumb" title="${esc(it.label)} (${it.role}) — click to manage in References" data-role="${it.role}" style="background-image:url('${it.imgUrl}')"><span class="pref-role">${roleIcon[it.role] || "◈"}</span></div>`
+  ).join("");
+  return `<div class="panel-refs">${thumbs}<button class="pref-edit" title="Manage reference images">✦ refs</button></div>`;
+}
+function refreshPanelRefs(shotNum) {
+  const s = (state.shots || []).find(x => x.shot === shotNum);
+  if (!s) return;
+  [$(`.gpanel[data-shot="${shotNum}"]`), $(`.spanel[data-shot="${shotNum}"]`)].forEach(card => {
+    if (!card) return;
+    const old = card.querySelector(".panel-refs"); if (old) old.remove();
+    const html = panelRefsHTML(s); if (!html) return;
+    const anchor = card.querySelector(".gimg, .simg");
+    if (anchor) anchor.insertAdjacentHTML("afterend", html);
+  });
+}
+
 // Each asset holds a GALLERY of reference images (multiple angles, all optional): upload your own
 // and/or generate, delete any. These are reused everywhere downstream (Phase 2).
 const ASSET_KINDS = [
@@ -530,6 +584,7 @@ function spanelHTML(s) {
   const img = s._img;
   return `<div class="spanel" data-shot="${s.shot}">
     <div class="simg ${img ? "" : "empty"}" ${img ? `style="background-image:url('${img}')"` : ""} data-state="${img ? "" : "drawing…"}"></div>
+    ${panelRefsHTML(s)}
     <div class="smeta">#${s.shot} · ${esc(s.type)} · staging</div>
     <div class="sactions">
       <button class="sbtn regen">↻ Regenerate</button>
@@ -628,6 +683,7 @@ sboard.addEventListener("click", e => {
   const card = e.target.closest(".spanel"); if (!card) return;
   const shot = +card.dataset.shot;
   if (e.target.closest(".regen")) return regenStaging(shot);
+  if (e.target.closest(".panel-refs")) { go("references"); renderReferences(); return; }
   if (e.target.closest(".del")) return clearStaging(shot);
   if (e.target.closest(".edit")) return card.querySelector(".seditor").classList.toggle("hidden");
   if (e.target.closest(".applyedit")) {
@@ -644,6 +700,7 @@ const gp = shot => $(`.gpanel[data-shot="${shot}"]`);
 function gpanelHTML(s) {
   return `<div class="gpanel" data-shot="${s.shot}">
     <div class="gimg empty" data-state="${s.is_staging ? "" : "queued"}"><span class="gnum">${String(s.shot).padStart(2, "0")}</span></div>
+    ${panelRefsHTML(s)}
     <div class="gmeta"><span class="gtype">${esc(s.type)}</span><span class="gright"></span></div>
     <div class="gactions">
       <button class="gact dl" title="Download this panel">⬇ Download</button>
@@ -768,6 +825,7 @@ $("#genBoard").addEventListener("click", e => {
     return;
   }
   if (e.target.closest(".retry")) return regenPanel(shot);
+  if (e.target.closest(".panel-refs")) { go("references"); renderReferences(); return; }
   if (e.target.closest(".approve")) {                 // keep a QA-flagged shot anyway
     clearGreason(shot); setGenPill(shot, "approved", "Approved");
     if (s) s.panelStatus = "approved";
@@ -999,7 +1057,11 @@ async function genPanelReal(shotNum, opts = {}, onStage) {
     const s = (st.shots || []).find(x => x.shot === shotNum);
     if (!s) continue;
     if (onStage && s.panelStatus && s.panelStatus !== last) { last = s.panelStatus; onStage(s.panelStatus); }
-    if (["approved", "flagged", "error"].includes(s.panelStatus)) return { status: s.panelStatus, reason: s.reason };
+    if (["approved", "flagged", "error"].includes(s.panelStatus)) {
+      const local = (state.shots || []).find(x => x.shot === shotNum);
+      if (local && s.usedRefs) { local.usedRefs = s.usedRefs; refreshPanelRefs(shotNum); }
+      return { status: s.panelStatus, reason: s.reason };
+    }
   }
   return { status: "error", reason: "timed out" };
 }
