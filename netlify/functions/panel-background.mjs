@@ -40,7 +40,12 @@ export default async (req) => {
     const MAX_REFS = 6;
     const loadRefBufs = async (asset, n) => {
       const out = [];
-      for (const r of (asset?.refs || []).slice(0, n)) {
+      // prefer the user-selected ref; fall back to first n refs in order
+      const allRefs = asset?.refs || [];
+      const ordered = asset?.selectedRid
+        ? [allRefs.find(r => r.rid === asset.selectedRid), ...allRefs.filter(r => r.rid !== asset.selectedRid)].filter(Boolean)
+        : allRefs;
+      for (const r of ordered.slice(0, n)) {
         if (refs.length + out.length >= MAX_REFS) break;
         const buf = await readAssetImg(id, asset.which, r.rid);
         if (buf) out.push(Buffer.from(buf));

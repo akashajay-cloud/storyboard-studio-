@@ -33,9 +33,18 @@ export default async (req) => {
     const kind = kindOf(p.assets, which); if (!kind) return json({ error: "asset not found" }, 404);
     if (action === "delete") {
       const a = JSON.parse(JSON.stringify(p.assets));
-      a[kind].forEach(x => { if (x.which === which) x.refs = (x.refs || []).filter(r => r.rid !== rid); });
+      a[kind].forEach(x => {
+        if (x.which !== which) return;
+        x.refs = (x.refs || []).filter(r => r.rid !== rid);
+        if (x.selectedRid === rid) x.selectedRid = (x.refs[0] || {}).rid || null;
+      });
       await putProject(id, { ...p, assets: a });
       await deleteAssetImg(id, which, rid);
+    }
+    if (action === "select") {
+      const a = JSON.parse(JSON.stringify(p.assets));
+      a[kind].forEach(x => { if (x.which === which) x.selectedRid = rid; });
+      await putProject(id, { ...p, assets: a });
     }
     return json({ ok: true });
   } catch (e) {

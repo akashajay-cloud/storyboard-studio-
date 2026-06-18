@@ -13,14 +13,15 @@ const findAsset = (assets, which) =>
 
 export default async (req) => {
   if (!authed(req)) return new Response("unauthorized", { status: 401 });
-  let id, which;
-  try { ({ id, which } = await req.json()); } catch { return new Response("bad request", { status: 400 }); }
+  let id, which, feedback;
+  try { ({ id, which, feedback } = await req.json()); } catch { return new Response("bad request", { status: 400 }); }
   const p = await getProject(id);
   if (!p) return new Response("not found", { status: 404 });
   const kind = findAsset(p.assets, which);
   if (!kind) return new Response("asset not found", { status: 404 });
   const asset = p.assets[kind].find(x => x.which === which);
-  const prompt = kind === "characters" ? charRefPrompt(asset) : kind === "locations" ? locRefPrompt(asset) : propRefPrompt(asset);
+  const base = kind === "characters" ? charRefPrompt(asset) : kind === "locations" ? locRefPrompt(asset) : propRefPrompt(asset);
+  const prompt = feedback ? base + " ADJUSTMENT: " + String(feedback).slice(0, 400) : base;
 
   const rid = mkRid();
   try {
