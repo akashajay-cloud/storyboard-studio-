@@ -52,6 +52,13 @@ export default async (req) => {
       }
       return out;
     };
+    // characters FIRST — gpt-image weights earlier images more; face identity must come before staging
+    const shotChars = new Set([...(shot.figures || []).map(f => f && f.name), ...(shot.characters || [])].filter(Boolean));
+    const charNames = [];
+    for (const c of (A.characters || [])) {
+      if (!shotChars.has(c.name) || refs.length >= MAX_REFS) continue;
+      const b = await loadRefBufs(c, 1); if (b.length) { refs.push(...b); charNames.push(c.name); }
+    }
     // location reference leads the staging shot (it has no staging frame of its own yet)
     if (shot.is_staging && shot.setup) {
       const loc = (A.locations || []).find(l => l.id === shot.setup);
@@ -61,13 +68,6 @@ export default async (req) => {
     if (!shot.is_staging && shot.setup) {
       const stagingShot = shots.find(s => s.is_staging && s.setup === shot.setup);
       if (stagingShot) { const pbuf = await readPanel(id, stagingShot.shot); if (pbuf) { const b = Buffer.from(pbuf); refs.push(b); stagingB64 = b.toString("base64"); } }
-    }
-    // characters present in THIS shot — one face reference each (identity anchor)
-    const shotChars = new Set([...(shot.figures || []).map(f => f && f.name), ...(shot.characters || [])].filter(Boolean));
-    const charNames = [];
-    for (const c of (A.characters || [])) {
-      if (!shotChars.has(c.name) || refs.length >= MAX_REFS) continue;
-      const b = await loadRefBufs(c, 1); if (b.length) { refs.push(...b); charNames.push(c.name); }
     }
     // key props mentioned in this shot's text
     const shotText = `${shot.caption || ""} ${shot.action || ""} ${shot.image_prompt || ""}`.toLowerCase();
@@ -107,22 +107,34 @@ export default async (req) => {
     // face AND clothing, ignoring any text description of that character's look.
     if (charNames.length) {
       refBits.push(
-        `reference photo${charNames.length > 1 ? "s" : ""} of ${charNames.join(" and ")} — ` +
-        `for each person USE THE REFERENCE PHOTO to determine their exact face, hair, skin tone, ` +
-        `and ALL clothing/outfit details. Do NOT infer or add any clothing not clearly visible in ` +
-        `the reference; their appearance in the generated image must match the photo exactly.`
+        `the FIRST ${charNames.length > 1 ? charNames.length + " reference photos are" : "reference photo is"} of ${charNames.join(" and ")} — ` +
+        `COPY each person's face, hair, skin tone, and ALL clothing EXACTLY from their reference photo. ` +
+        `Do NOT substitute generic faces or invent clothing. The character must be identifiable as the same person across every shot.`
       );
     }
     if (propNames.length) refBits.push(`reference photos of ${propNames.join(", ")} — keep these objects consistent`);
     const refLine = refBits.length ? `You are given reference images: ${refBits.join("; ")}. Match them so the people, place and objects stay consistent across shots. ` : "";
+
+    // Gender override: if a character has a ref photo, the photo defines their gender — the script's
+    // text may have guessed wrong (e.g. named "Arya" assumed female; ref shows male). Append an
+    // explicit correction so the gendered words in image_prompt don't fight the reference.
+    const genderOverrides = charNames.map(name => {
+      const c = (A.characters || []).find(x => x.name === name);
+      const fig = (shot.figures || []).find(f => f && f.name === name);
+      if (!fig) return null;
+      // We can't read the ref image to detect gender, but we can tell the model: let the photo decide.
+      return `IMPORTANT: The word "${fig.gender}" in the prompt below may be wrong for ${name} — the reference photo shows their actual gender. Render ${name} exactly as they appear in their reference photo, ignoring any gendered text description.`;
+    }).filter(Boolean);
+    const genderOverrideLine = genderOverrides.length ? genderOverrides.join(" ") + " " : "";
+
     const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
     const anchor = lightingAnchorFor(shots, shot);                 // one lighting anchor per setup
     const labels = labelInstruction(shot.figures, shot.characters, project.styles);
     const tail = " No captions, borders, panel frames, watermarks or UI — only the small character name labels described above.";
 
     let prompt = promptOverride
-      ? CINEMATIC_LEAD + " " + refLine + promptOverride + labels + tail
-      : CINEMATIC_LEAD + " " + refLine + `${shot.type}, ${lensFor(shot.type)}. ` + blocking
+      ? CINEMATIC_LEAD + " " + refLine + genderOverrideLine + promptOverride + labels + tail
+      : CINEMATIC_LEAD + " " + refLine + genderOverrideLine + `${shot.type}, ${lensFor(shot.type)}. ` + blocking
         + (anchor ? " Lighting: " + anchor.replace(/\s*\.?\s*$/, "") + "." : "")
         + labels + tail;
     if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;

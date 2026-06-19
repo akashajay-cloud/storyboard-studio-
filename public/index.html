@@ -164,8 +164,16 @@
         <div><h2>Build your references</h2><p class="muted">Lock the look of your characters, locations and key props once — every shot reuses them. Upload your own, or generate and approve.</p></div>
         <div class="head-actions">
           <button class="btn" data-goto="review">← Shotlist</button>
-          <button class="btn primary" id="toStagingFromRefs">References ready → Staging</button>
+          <button class="btn primary" id="toStagingFromRefs" disabled title="Click ✓ Approve on one reference image per asset to continue">References ready → Staging</button>
         </div>
+      </div>
+      <div class="ref-notice" id="refNotice">
+        <span class="ref-notice-icon">ℹ</span>
+        <div class="ref-notice-body">
+          <b>You need to approve a reference image for each asset before you can continue.</b>
+          Upload or generate images, then click <strong>✓ Approve</strong> on the one you want used for generation. Once every asset has an approved pick, the button above unlocks.
+        </div>
+        <button class="ref-notice-close" id="refNoticeClose" title="Dismiss">✕</button>
       </div>
       <div id="refsWrap">
         <div class="refsection" id="refsecChars"><h3 class="refhead">Characters</h3><div class="refgrid" id="refChars"></div></div>

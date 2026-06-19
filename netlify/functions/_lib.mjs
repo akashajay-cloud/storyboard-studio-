@@ -140,7 +140,7 @@ export const CINEMATIC_LEAD =
 export const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "x";
 // Reference-image prompts: clean, well-lit, neutral so they're reusable identity anchors.
 export const charRefPrompt = (c) =>
-  `A photorealistic character reference portrait of ${c.gender || "a person"}${c.look ? ", " + c.look : ""}. ` +
+  `A photorealistic character reference portrait of a person${c.look ? ", " + c.look : ""}. ` +
   `Neutral friendly expression, looking at camera, framed head to mid-torso, even soft studio lighting, plain light-grey background. Full colour, sharp, realistic skin and clothing. No text, no props, one person only.`;
 export const locRefPrompt = (l) =>
   `A photorealistic establishing reference shot of ${l.label || l.id}${l.desc ? " — " + l.desc : ""}. ` +
@@ -176,6 +176,7 @@ export async function generateImageB64(prompt, refs = []) {
         fd.append("model", IMAGE_MODEL);
         fd.append("prompt", prompt);
         fd.append("size", IMAGE_SIZE);
+        fd.append("quality", "high");
         fd.append("n", "1");
         refs.forEach((buf, i) => fd.append("image[]", new Blob([buf], { type: "image/png" }), `ref${i}.png`));
         res = await fetch(IMAGE_EDIT_URL, {

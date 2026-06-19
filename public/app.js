@@ -468,13 +468,14 @@ const eachAsset = fn => { const a = state.current?.assets || {}; ["characters", 
 const getAsset = which => { let r = null; eachAsset(x => { if (x.which === which) r = x; }); return r; };
 const allAssets = st => [...(st?.characters || []), ...(st?.locations || []), ...(st?.props || [])];
 function thumbHTML(which, ref, src, isSelected) {
-  const sel = isSelected ? " selected" : "";
-  return `<div class="refthumb${sel}" data-rid="${ref.rid}" style="background-image:url('${src || assetImgURL(which, ref.rid)}')">
-    ${isSelected ? '<span class="ref-active-badge">✓</span>' : ""}
-    <button class="refdel" title="Remove">×</button>
-    <div class="refactions">
-      <button class="refuse" title="${isSelected ? "Active ref" : "Use this for generation"}">${isSelected ? "✓ Active" : "✓ Use"}</button>
-      <button class="reffb" title="Regenerate with feedback">↻</button>
+  return `<div class="refthumb${isSelected ? " selected" : ""}" data-rid="${ref.rid}">
+    <div class="refimg" style="background-image:url('${src || assetImgURL(which, ref.rid)}')">
+      ${isSelected ? '<span class="ref-active-badge">✓</span>' : ""}
+    </div>
+    <div class="ref-btnrow">
+      <button class="refuse">${isSelected ? "✓ Approved" : "✓ Approve"}</button>
+      <button class="reffb" title="Regenerate with feedback">↻ Regen</button>
+      <button class="refdel" title="Remove this reference">🗑</button>
     </div>
   </div>`;
 }
@@ -507,36 +508,58 @@ function renderReferences() {
     $("#" + k.sec)?.classList.toggle("hidden", list.length === 0);
     const board = $("#" + k.board); if (board) board.innerHTML = list.map(a => assetCardHTML(k.key, a)).join("");
   });
+  checkRefsReady();
 }
+$("#refNoticeClose")?.addEventListener("click", () => $("#refNotice")?.classList.add("hidden"));
 const refStripOf = card => card.querySelector(".refstrip");
 function insertBeforeUpload(card, node) { refStripOf(card).insertBefore(node, card.querySelector(".reftile.up")); }
 function insertThumb(card, node) { insertBeforeUpload(card, node); card.classList.add("ok"); }
-function loadingTile(card, label) { const t = document.createElement("div"); t.className = "refthumb loading"; t.dataset.state = label || "…"; insertBeforeUpload(card, t); return t; }
-function failTile(tile, msg) { tile.classList.remove("loading"); tile.classList.add("err"); tile.dataset.state = msg || "✕ failed"; }
+function loadingTile(card, label) {
+  const t = document.createElement("div"); t.className = "refthumb loading";
+  t.innerHTML = `<div class="refimg" data-state="${label || "…"}"></div>`;
+  insertBeforeUpload(card, t); return t;
+}
+function failTile(tile, msg) {
+  tile.classList.remove("loading"); tile.classList.add("err");
+  const img = tile.querySelector(".refimg"); if (img) img.dataset.state = msg || "✕ failed";
+}
+function checkRefsReady() {
+  const assets = state.current?.assets || {};
+  const all = [...(assets.characters || []), ...(assets.locations || []), ...(assets.props || [])];
+  const allApproved = all.every(a => !(a.refs?.length) || a.selectedRid);
+  const btn = $("#toStagingFromRefs"); if (!btn) return;
+  btn.disabled = !allApproved;
+  btn.title = allApproved ? "" : "Click ✓ Approve on one reference image per asset to continue";
+}
 function thumbNode(which, rid, src, isSelected) {
   const t = document.createElement("div");
   t.className = "refthumb" + (isSelected ? " selected" : "");
   t.dataset.rid = rid;
-  t.style.backgroundImage = `url('${src || assetImgURL(which, rid)}')`;
-  t.innerHTML = `${isSelected ? '<span class="ref-active-badge">✓</span>' : ""}
-    <button class="refdel" title="Remove">×</button>
-    <div class="refactions">
-      <button class="refuse">${isSelected ? "✓ Active" : "✓ Use"}</button>
-      <button class="reffb">↻</button>
+  t.innerHTML = `
+    <div class="refimg" style="background-image:url('${src || assetImgURL(which, rid)}')">
+      ${isSelected ? '<span class="ref-active-badge">✓</span>' : ""}
+    </div>
+    <div class="ref-btnrow">
+      <button class="refuse">${isSelected ? "✓ Approved" : "✓ Approve"}</button>
+      <button class="reffb" title="Regenerate with feedback">↻ Regen</button>
+      <button class="refdel" title="Remove this reference">🗑</button>
     </div>`;
   return t;
 }
 async function selectRef(which, rid) {
   const a = getAsset(which); if (!a) return;
   a.selectedRid = rid;
-  const card = $(`[data-which="${which}"]`); if (!card) return;
-  card.querySelectorAll(".refthumb").forEach(t => {
-    const active = t.dataset.rid === rid;
-    t.classList.toggle("selected", active);
-    const btn = t.querySelector(".refuse"); if (btn) btn.textContent = active ? "✓ Active" : "✓ Use";
-    t.querySelector(".ref-active-badge")?.remove();
-    if (active) t.insertAdjacentHTML("afterbegin", '<span class="ref-active-badge">✓</span>');
-  });
+  const card = $(`[data-which="${which}"]`);
+  if (card) {
+    card.querySelectorAll(".refthumb").forEach(t => {
+      const active = t.dataset.rid === rid;
+      t.classList.toggle("selected", active);
+      const btn = t.querySelector(".refuse"); if (btn) btn.textContent = active ? "✓ Approved" : "✓ Approve";
+      t.querySelector(".ref-active-badge")?.remove();
+      if (active) t.querySelector(".refimg")?.insertAdjacentHTML("afterbegin", '<span class="ref-active-badge">✓</span>');
+    });
+  }
+  checkRefsReady();
   if (!DEMO) await fetch("/api/set-asset", {
     method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" },
     body: JSON.stringify({ id: state.current.id, which, rid, action: "select" }),
@@ -561,7 +584,14 @@ async function regenRefWithFeedback(which, card, feedback) {
     const sa = allAssets(st.assets).find(x => x.which === which);
     if (sa) {
       const fresh = (sa.refs || []).filter(r => !before.has(r.rid));
-      if (fresh.length) { a.refs = sa.refs; tile.remove(); fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid))); play("tick"); return; }
+      if (fresh.length) {
+        const autoSel = !a.selectedRid;
+        a.refs = sa.refs; tile.remove();
+        fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid, null, autoSel && r === fresh[0])));
+        play("tick");
+        if (autoSel) await selectRef(which, fresh[0].rid);
+        return;
+      }
     }
   }
   failTile(tile, "✕ failed"); play("error");
@@ -595,7 +625,17 @@ async function genReference(which, card) {
     await tick(2500);
     let st; try { st = await (await fetch(`/api/status?id=${state.current.id}`, { headers: apiHeaders() })).json(); } catch { continue; }
     const sa = allAssets(st.assets).find(x => x.which === which);
-    if (sa) { const fresh = (sa.refs || []).filter(r => !before.has(r.rid)); if (fresh.length) { a.refs = sa.refs; tile.remove(); fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid))); play("tick"); return; } }
+    if (sa) {
+      const fresh = (sa.refs || []).filter(r => !before.has(r.rid));
+      if (fresh.length) {
+        const autoSel = !a.selectedRid;
+        a.refs = sa.refs; tile.remove();
+        fresh.forEach(r => insertThumb(card, thumbNode(which, r.rid, null, autoSel && r === fresh[0])));
+        play("tick");
+        if (autoSel) await selectRef(which, fresh[0].rid);
+        return;
+      }
+    }
   }
   failTile(tile, "✕ failed"); play("error");   // timed out / generation failed
 }
@@ -609,15 +649,36 @@ async function uploadReferences(which, files, card) {
       const fd = new FormData(); fd.append("id", state.current.id); fd.append("which", which); fd.append("image", blob, "ref.jpg");
       const resp = await fetch("/api/set-asset", { method: "POST", headers: apiHeaders(), body: fd });
       const res = await resp.json().catch(() => ({}));
-      if (resp.ok && res.rid) { a.refs = [...(a.refs || []), { rid: res.rid, kind: "upload" }]; tile.replaceWith(thumbNode(which, res.rid)); card.classList.add("ok"); play("tick"); }
-      else { failTile(tile, "✕"); play("error"); alert("Upload failed: " + (res.error || ("HTTP " + resp.status))); }
+      if (resp.ok && res.rid) {
+        const autoSel = !a.selectedRid;
+        a.refs = [...(a.refs || []), { rid: res.rid, kind: "upload" }];
+        tile.replaceWith(thumbNode(which, res.rid, null, autoSel)); card.classList.add("ok"); play("tick");
+        if (autoSel) await selectRef(which, res.rid);
+      } else { failTile(tile, "✕"); play("error"); alert("Upload failed: " + (res.error || ("HTTP " + resp.status))); }
     } catch (e) { failTile(tile, "✕"); play("error"); alert("Upload failed: " + String(e).slice(0, 140)); }
   }
 }
 async function deleteRef(which, rid, thumb) {
-  const a = getAsset(which); if (a) a.refs = (a.refs || []).filter(r => r.rid !== rid);
+  const a = getAsset(which);
+  if (a) {
+    a.refs = (a.refs || []).filter(r => r.rid !== rid);
+    if (a.selectedRid === rid) {
+      a.selectedRid = (a.refs[0] || {}).rid || null;
+      // mark the new active thumb if one exists
+      const card = thumb.closest(".refcard");
+      if (a.selectedRid && card) {
+        const next = card.querySelector(`.refthumb[data-rid="${a.selectedRid}"]`);
+        if (next) {
+          next.classList.add("selected");
+          const btn = next.querySelector(".refuse"); if (btn) btn.textContent = "✓ Approved";
+          next.querySelector(".refimg")?.insertAdjacentHTML("afterbegin", '<span class="ref-active-badge">✓</span>');
+        }
+      }
+    }
+  }
   const card = thumb.closest(".refcard"); thumb.remove();
   if (a && !(a.refs || []).length) card.classList.remove("ok");
+  checkRefsReady();
   if (!DEMO) await fetch("/api/set-asset", { method: "POST", headers: { ...apiHeaders(), "content-type": "application/json" }, body: JSON.stringify({ id: state.current.id, which, rid, action: "delete" }) }).catch(() => {});
 }
 const refsWrap = $("#refsWrap");
@@ -647,7 +708,8 @@ refsWrap.addEventListener("click", e => {
   // lightbox / dismiss error
   const t = e.target.closest(".refthumb");
   if (t && t.classList.contains("err")) { t.remove(); return; }
-  if (t && !t.classList.contains("loading")) openLightbox([t.style.backgroundImage.slice(5, -2)], 0);
+  const ri = e.target.closest(".refimg");
+  if (ri && !t?.classList.contains("loading")) openLightbox([ri.style.backgroundImage.slice(5, -2)], 0);
 });
 refsWrap.addEventListener("change", e => {
   if (e.target.type !== "file" || !e.target.files.length) return;
