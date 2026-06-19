@@ -127,17 +127,36 @@ export default async (req) => {
     }).filter(Boolean);
     const genderOverrideLine = genderOverrides.length ? genderOverrides.join(" ") + " " : "";
 
-    const blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
+    // If feedback mentions a gender correction, swap gendered words in the blocking text so the
+    // text description no longer fights the correction (e.g. "make Arya male" → replace "woman/she/her"
+    // with "man/he/him" in the blocking text for that shot).
+    let blocking = coreBlocking(shot.image_prompt) || shot.action || shot.caption || "";
+    const fb = (shot._feedback || "").toLowerCase();
+    if (fb && /\b(male|man|he|him|boy|his)\b/.test(fb)) {
+      blocking = blocking.replace(/\bwoman\b/gi, "man").replace(/\bwomen\b/gi, "men")
+        .replace(/\bshe\b/gi, "he").replace(/\bher\b/gi, "him").replace(/\bhers\b/gi, "his")
+        .replace(/\bfemale\b/gi, "male").replace(/\bgirl\b/gi, "boy");
+    }
+    if (fb && /\b(female|woman|she|her|girl)\b/.test(fb)) {
+      blocking = blocking.replace(/\bman\b/gi, "woman").replace(/\bmen\b/gi, "women")
+        .replace(/\bhe\b/gi, "she").replace(/\bhim\b/gi, "her").replace(/\bhis\b/gi, "her")
+        .replace(/\bmale\b/gi, "female").replace(/\bboy\b/gi, "girl");
+    }
+
+    // Feedback goes BEFORE the blocking text so it takes precedence over stale gendered descriptions.
+    const feedbackLead = shot._feedback
+      ? `CORRECTION (apply before everything below): ${shot._feedback}. `
+      : "";
+
     const anchor = lightingAnchorFor(shots, shot);                 // one lighting anchor per setup
     const labels = labelInstruction(shot.figures, shot.characters, project.styles);
     const tail = " No captions, borders, panel frames, watermarks or UI — only the small character name labels described above.";
 
     let prompt = promptOverride
-      ? CINEMATIC_LEAD + " " + refLine + genderOverrideLine + promptOverride + labels + tail
-      : CINEMATIC_LEAD + " " + refLine + genderOverrideLine + `${shot.type}, ${lensFor(shot.type)}. ` + blocking
+      ? CINEMATIC_LEAD + " " + refLine + feedbackLead + genderOverrideLine + promptOverride + labels + tail
+      : CINEMATIC_LEAD + " " + refLine + feedbackLead + genderOverrideLine + `${shot.type}, ${lensFor(shot.type)}. ` + blocking
         + (anchor ? " Lighting: " + anchor.replace(/\s*\.?\s*$/, "") + "." : "")
         + labels + tail;
-    if (shot._feedback) prompt += " CORRECTION: " + shot._feedback;
 
     let b64 = await generateImageB64(prompt, refs);
 
